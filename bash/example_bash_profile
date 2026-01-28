@@ -44,11 +44,11 @@ export PATH="/usr/local/BIOVIA/COSMOtherm2021/COSMOthermX:/usr/local/BIOVIA/COSM
 
 # ==================== TURBOMOLE ====================
 export TURBODIR=/usr/local/BIOVIA/TURBOMOLE
-export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(sysname):${PATH}"
+#export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(sysname):${PATH}"
 
 # ==================== NCIPlot ====================
 export NCIPLOT_HOME=/usr/local/nciplot
 export PATH="/usr/local/nciplot:${PATH}"
 
 # ==================== Group Python utilities ====================
-export PATH="${PATH}:/usr/local/patonlab/python:/usr/local/patonlab/bash:/usr/local/patonlab/autotest"
+export PATH="${PATH}:/usr/local/patonlab_unix/python:/usr/local/patonlab_unix/bash:/usr/local/patonlab_unix/testing"
