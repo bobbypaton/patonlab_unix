@@ -1,0 +1,96 @@
+# Computational Chemistry Software Test Suite Configuration
+#
+# This file allows you to customize executable paths and test settings
+# without modifying the Python script.
+#
+# To use: Place this file in the same directory as autotest.py,
+# or specify with: autotest.py --config /path/to/config.yaml
+
+# Global settings
+settings:
+  # Number of cores for parallel tests (null = auto-detect)
+  parallel_cores: null
+
+  # Default timeout in seconds (can be overridden per-test)
+  default_timeout: 300
+
+# Executable paths for each software package
+# The script will try each path in order until one is found
+# You can use:
+#   - Just the executable name (will search PATH)
+#   - Absolute paths
+#   - Environment variables like $HOME or ${TURBODIR}
+executables:
+  gaussian16:
+    - g16
+    - /usr/local/Gaussian/G16C/g16/g16
+    - /opt/gaussian/g16/g16
+    - /usr/local/g16/g16
+    - ${g16root}/g16/g16
+
+  nbo7:
+    # NBO7 runs through Gaussian
+    - g16
+    - /usr/local/Gaussian/G16C/g16/g16
+
+  orca:
+    - orca
+    - /usr/local/ORCA502/orca
+    - /usr/local/orca/orca
+    - /opt/orca/orca
+    - ${ORCA_PATH}/orca
+
+  xtb:
+    - xtb
+    - /usr/local/xtb/bin/xtb
+    - /opt/xtb/bin/xtb
+    - ${XTBHOME}/bin/xtb
+
+  crest:
+    - crest
+    - /usr/local/xtb/crest
+    - /usr/local/crest/crest
+    - /opt/crest/crest
+
+  nciplot:
+    - nciplot
+    - /usr/local/nciplot/nciplot
+    - /opt/nciplot/nciplot
+
+  cosmotherm:
+    - cosmotherm
+    - /usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/BIN-LINUX/cosmotherm
+    - /opt/cosmotherm/cosmotherm
+
+  turbomole:
+    - ridft
+    - /usr/local/BIOVIA/TURBOMOLE/bin/em64t-unknown-linux-gnu_smp/ridft
+    - ${TURBODIR}/bin/em64t-unknown-linux-gnu_smp/ridft
+    - /opt/turbomole/bin/ridft
+
+  qchem:
+    - qchem
+    - /usr/local/qchem/bin/qchem
+    - /opt/qchem/bin/qchem
+    - ${QC}/bin/qchem
+
+# Per-test configuration overrides
+# Uncomment and modify as needed
+tests:
+  # gaussian16:
+  #   timeout: 900
+  #   enabled: true
+
+  # orca_parallel:
+  #   parallel_cores: 16
+  #   timeout: 1200
+
+  # crest:
+  #   parallel_cores: 24
+  #   timeout: 1800
+
+  # Disable tests you don't have installed
+  # cosmotherm:
+  #   enabled: false
+  # qchem:
+  #   enabled: false

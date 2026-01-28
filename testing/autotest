@@ -1,0 +1,727 @@
+#!/usr/bin/env python3
+"""
+Computational Chemistry Software Test Suite
+
+Tests that common computational chemistry packages are properly installed
+and functioning. Supports multiple packages with configurable paths,
+timeouts, and parallel execution detection.
+
+Author: Paton Research Group (patonlab@colostate.edu)
+
+Usage:
+    python autotest.py              # Run all tests
+    python autotest.py --list       # List available tests
+    python autotest.py --only orca  # Run specific test(s)
+    python autotest.py --skip g16   # Skip specific test(s)
+    python autotest.py --json       # Output results as JSON
+    python autotest.py --dry-run    # Show what would run
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# Optional YAML support
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DEFAULT_INPUT_DIR = SCRIPT_DIR / "inputs"
+DEFAULT_CONFIG_FILE = SCRIPT_DIR / "config.yaml"
+
+@dataclass
+class TestConfig:
+    """Configuration for a single software test."""
+    name: str
+    description: str
+    executable_paths: List[str]  # Paths to search for executable
+    input_files: List[str]       # Input files needed
+    output_file: str             # Main output file to check
+    success_pattern: str         # Regex pattern indicating success
+    version_pattern: Optional[str] = None  # Regex to extract version
+    version_file: Optional[str] = None     # File to check for version (if different from output)
+    timeout: int = 300           # Timeout in seconds
+    env_vars: dict = field(default_factory=dict)  # Environment variables to set
+    depends_on: Optional[str] = None  # Name of test this depends on
+    command_template: Optional[str] = None  # Custom command template
+    parallel_cores: Optional[int] = None  # Override default parallel cores
+
+
+def expand_path(path: str) -> str:
+    """Expand environment variables and ~ in a path."""
+    # Handle ${VAR} style
+    path = re.sub(
+        r'\$\{(\w+)\}',
+        lambda m: os.environ.get(m.group(1), m.group(0)),
+        path
+    )
+    # Handle $VAR style
+    path = os.path.expandvars(path)
+    # Handle ~
+    path = os.path.expanduser(path)
+    return path
+
+
+def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_FILE
+
+    if not config_path.exists():
+        return {}
+
+    if not HAS_YAML:
+        print(f"Warning: PyYAML not installed, cannot load {config_path}", file=sys.stderr)
+        print("Install with: pip install pyyaml", file=sys.stderr)
+        return {}
+
+    with open(config_path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def get_test_configs(
+    parallel_cores: int = 8,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, TestConfig]:
+    """Return test configurations for all supported software."""
+    config = config or {}
+    exe_config = config.get("executables") or {}
+    test_overrides = config.get("tests") or {}
+
+    def get_exe_paths(key: str, defaults: List[str]) -> List[str]:
+        """Get executable paths from config or use defaults."""
+        paths = exe_config.get(key, defaults)
+        return [expand_path(p) for p in paths]
+
+    configs = {
+        "gaussian16": TestConfig(
+            name="Gaussian 16",
+            description="Gaussian 16 quantum chemistry",
+            executable_paths=get_exe_paths("gaussian16", [
+                "g16",
+                "/usr/local/Gaussian/G16C/g16/g16",
+                "/opt/gaussian/g16/g16",
+                "/usr/local/g16/g16",
+            ]),
+            input_files=["test_g16.com"],
+            output_file="test_g16.log",
+            success_pattern=r"Normal termination",
+            version_pattern=r"Gaussian\s+16,\s+Revision\s+([A-Z]\.\d+)",
+            timeout=600,
+        ),
+
+        "nbo7": TestConfig(
+            name="NBO",
+            description="Natural Bond Orbital analysis (via Gaussian)",
+            executable_paths=get_exe_paths("nbo7", [
+                "g16",
+                "/usr/local/Gaussian/G16C/g16/g16",
+                "/opt/gaussian/g16/g16",
+            ]),
+            input_files=["test_nbo7.com"],
+            output_file="test_nbo7.log",
+            success_pattern=r"Normal termination",
+            version_pattern=r"NBO\s+(\d+\.\d+)",
+            timeout=600,
+        ),
+
+        "orca_serial": TestConfig(
+            name="ORCA (serial)",
+            description="ORCA quantum chemistry in serial mode",
+            executable_paths=get_exe_paths("orca", [
+                "orca",
+                "/usr/local/ORCA502/orca",
+                "/usr/local/orca/orca",
+                "/opt/orca/orca",
+            ]),
+            input_files=["test_orca.inp"],
+            output_file="test_orca.out",
+            success_pattern=r"TERMINATED NORMALLY",
+            version_pattern=r"Program Version\s+([\d.]+)",
+            timeout=600,
+        ),
+
+        "orca_parallel": TestConfig(
+            name="ORCA (parallel)",
+            description=f"ORCA quantum chemistry with {parallel_cores} cores",
+            executable_paths=get_exe_paths("orca", [
+                "orca",
+                "/usr/local/ORCA502/orca",
+                "/usr/local/orca/orca",
+                "/opt/orca/orca",
+            ]),
+            input_files=["test_orca_pal8.inp"],
+            output_file="test_orca_pal8.out",
+            success_pattern=r"TERMINATED NORMALLY",
+            version_pattern=r"Program Version\s+([\d.]+)",
+            timeout=900,
+            parallel_cores=parallel_cores,
+        ),
+
+        "xtb": TestConfig(
+            name="XTB",
+            description="Extended tight-binding methods",
+            executable_paths=get_exe_paths("xtb", [
+                "xtb",
+                "/usr/local/xtb/bin/xtb",
+                "/opt/xtb/bin/xtb",
+            ]),
+            input_files=["test_xtb.xyz"],
+            output_file="test_xtb.out",
+            success_pattern=r"convergence criteria satisfied",
+            version_pattern=r"xtb version\s+([\d.]+)",
+            timeout=300,
+        ),
+
+        "crest": TestConfig(
+            name="CREST",
+            description="Conformer-rotamer ensemble sampling",
+            executable_paths=get_exe_paths("crest", [
+                "crest",
+                "/usr/local/xtb/crest",
+                "/usr/local/crest/crest",
+                "/opt/crest/crest",
+            ]),
+            input_files=["test_crest.xyz"],
+            output_file="test_crest.out",
+            success_pattern=r"terminated normally",
+            version_pattern=r"CREST\s+version\s+([\d.]+)",
+            timeout=1200,
+            parallel_cores=parallel_cores,
+        ),
+
+        "nciplot": TestConfig(
+            name="NCIPLOT",
+            description="Non-covalent interaction plots",
+            executable_paths=get_exe_paths("nciplot", [
+                "nciplot",
+                "/usr/local/nciplot/nciplot",
+                "/opt/nciplot/nciplot",
+            ]),
+            input_files=["test.nci", "test_nci.wfn"],
+            output_file="test_nci.out",
+            success_pattern=r"Time for writing outputs",
+            timeout=300,
+            depends_on="gaussian16",  # Needs .wfn file from Gaussian
+        ),
+
+        "qchem": TestConfig(
+            name="Q-Chem",
+            description="Q-Chem quantum chemistry",
+            executable_paths=get_exe_paths("qchem", [
+                "qchem",
+                "/usr/local/qchem6/bin/qchem",
+                "/usr/local/qchem/bin/qchem",
+                "/opt/qchem/bin/qchem",
+                ""
+            ]),
+            input_files=["test_qchem.inp"],
+            output_file="test_qchem.out",
+            success_pattern=r"Thank you very much for using Q-Chem",
+            version_pattern=r"Q-Chem\s+([\d.]+)",
+            timeout=600,
+        ),
+
+        "cosmotherm": TestConfig(
+            name="COSMOtherm",
+            description="COSMO-RS thermodynamic predictions",
+            executable_paths=get_exe_paths("cosmotherm", [
+                "cosmotherm",
+                "/usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/BIN-LINUX/cosmotherm",
+                "/opt/cosmotherm/cosmotherm",
+            ]),
+            input_files=["test_cosmo.inp"],
+            output_file="test_cosmo.out",
+            success_pattern=r"END job\s+8",
+            timeout=600,
+        ),
+
+        "turbomole": TestConfig(
+            name="TURBOMOLE",
+            description="TURBOMOLE quantum chemistry (ridft)",
+            executable_paths=get_exe_paths("turbomole", [
+                "ridft",
+                "/usr/local/BIOVIA/TURBOMOLE/bin/em64t-unknown-linux-gnu_smp/ridft",
+                "/opt/turbomole/bin/ridft",
+            ]),
+            input_files=["control", "coord", "mos"],
+            output_file="test_ridft.out",
+            success_pattern=r"ridft : all done",
+            version_pattern=r"TURBOMOLE\s+V([\d.]+)",
+            timeout=600,
+            env_vars={"PARA_ARCH": "SMP"},
+            parallel_cores=parallel_cores,
+        ),
+    }
+
+    # Apply per-test overrides from config
+    for test_id, overrides in test_overrides.items():
+        if test_id not in configs:
+            continue
+        if overrides is None:
+            continue
+
+        # Check if test is disabled
+        if overrides.get("enabled") is False:
+            del configs[test_id]
+            continue
+
+        # Apply overrides
+        cfg = configs[test_id]
+        if "timeout" in overrides:
+            cfg.timeout = overrides["timeout"]
+        if "parallel_cores" in overrides:
+            cfg.parallel_cores = overrides["parallel_cores"]
+
+    return configs
+
+
+# =============================================================================
+# Test Result
+# =============================================================================
+
+@dataclass
+class TestResult:
+    """Result of running a single test."""
+    name: str
+    passed: bool
+    message: str
+    version: Optional[str] = None
+    elapsed_time: float = 0.0
+    executable_path: Optional[str] = None
+    skipped: bool = False
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "passed": self.passed,
+            "skipped": self.skipped,
+            "message": self.message,
+            "version": self.version,
+            "elapsed_time": round(self.elapsed_time, 2),
+            "executable": self.executable_path,
+            "error": self.error,
+        }
+
+
+# =============================================================================
+# Test Runner
+# =============================================================================
+
+class CompChemTester:
+    """Runs computational chemistry software tests."""
+
+    def __init__(
+        self,
+        input_dir: Optional[Path] = None,
+        parallel_cores: Optional[int] = None,
+        verbose: bool = False,
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        self.input_dir = input_dir or DEFAULT_INPUT_DIR
+        self.config = config or {}
+
+        # Get parallel cores from config or auto-detect
+        settings = self.config.get("settings", {})
+        self.parallel_cores = (
+            parallel_cores
+            or settings.get("parallel_cores")
+            or self._detect_cores()
+        )
+
+        self.verbose = verbose
+        self.configs = get_test_configs(self.parallel_cores, self.config)
+        self.results: Dict[str, TestResult] = {}
+
+    def _detect_cores(self) -> int:
+        """Return default number of cores for parallel tests."""
+        return 8
+
+    def find_executable(self, paths: List[str]) -> Optional[str]:
+        """Find first available executable from list of paths."""
+        for path in paths:
+            # Check if it's in PATH
+            found = shutil.which(path)
+            if found:
+                return found
+            # Check absolute path
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
+
+    def extract_version(
+        self,
+        pattern: Optional[str],
+        content: str,
+    ) -> Optional[str]:
+        """Extract version string from output using regex pattern."""
+        if not pattern:
+            return None
+        match = re.search(pattern, content)
+        return match.group(1) if match else None
+
+    def run_test(
+        self,
+        test_id: str,
+        work_dir: Path,
+        dry_run: bool = False,
+    ) -> TestResult:
+        """Run a single test and return the result."""
+        config = self.configs[test_id]
+
+        # Check dependencies
+        if config.depends_on:
+            dep_result = self.results.get(config.depends_on)
+            if not dep_result or not dep_result.passed:
+                return TestResult(
+                    name=config.name,
+                    passed=False,
+                    skipped=True,
+                    message=f"Skipped: depends on {config.depends_on} which failed or was skipped",
+                )
+
+        # Find executable
+        exe_path = self.find_executable(config.executable_paths)
+        if not exe_path:
+            return TestResult(
+                name=config.name,
+                passed=False,
+                message=f"Executable not found. Searched: {', '.join(config.executable_paths[:3])}...",
+            )
+
+        # Copy input files to work directory
+        for input_file in config.input_files:
+            src = self.input_dir / input_file
+            if not src.exists():
+                # Check if it was generated by a previous test
+                generated = work_dir / input_file
+                if not generated.exists():
+                    return TestResult(
+                        name=config.name,
+                        passed=False,
+                        message=f"Input file not found: {input_file}",
+                        executable_path=exe_path,
+                    )
+            else:
+                shutil.copy2(src, work_dir / input_file)
+
+        # Build command
+        input_file = config.input_files[0]
+        output_file = config.output_file
+
+        if config.command_template:
+            cmd = config.command_template.format(
+                exe=exe_path,
+                input=input_file,
+                output=output_file,
+                cores=config.parallel_cores or self.parallel_cores,
+            )
+            cmd_parts = cmd.split()
+        else:
+            # Default command patterns based on software
+            if test_id in ("gaussian16", "nbo7"):
+                cmd_parts = [exe_path, input_file]
+            elif test_id.startswith("orca"):
+                cmd_parts = [exe_path, input_file]
+            elif test_id == "xtb":
+                cmd_parts = [exe_path, input_file]
+            elif test_id == "crest":
+                cores = config.parallel_cores or self.parallel_cores
+                cmd_parts = [exe_path, input_file, "-T", str(cores)]
+            elif test_id == "nciplot":
+                cmd_parts = [exe_path, input_file]
+            elif test_id == "cosmotherm":
+                cmd_parts = [exe_path, input_file]
+            elif test_id == "turbomole":
+                cmd_parts = [exe_path]
+            elif test_id == "qchem":
+                cores = config.parallel_cores or self.parallel_cores
+                cmd_parts = [exe_path, "-nt", str(cores), input_file, output_file]
+            else:
+                cmd_parts = [exe_path, input_file]
+
+        if dry_run:
+            return TestResult(
+                name=config.name,
+                passed=True,
+                skipped=True,
+                message=f"[DRY RUN] Would run: {' '.join(cmd_parts)}",
+                executable_path=exe_path,
+            )
+
+        # Set up environment
+        env = os.environ.copy()
+        env.update(config.env_vars)
+        if config.parallel_cores:
+            env["PARNODES"] = str(config.parallel_cores)
+            env["OMP_NUM_THREADS"] = str(config.parallel_cores)
+
+        # Run the test
+        start_time = time.time()
+        try:
+            with open(work_dir / output_file, "w") as outf:
+                result = subprocess.run(
+                    cmd_parts,
+                    cwd=work_dir,
+                    stdout=outf,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=config.timeout,
+                )
+            elapsed = time.time() - start_time
+
+            # Read output and check for success
+            output_path = work_dir / output_file
+            if output_path.exists():
+                output_content = output_path.read_text(errors="ignore")
+            else:
+                output_content = ""
+
+            # Check for success pattern
+            success = bool(re.search(config.success_pattern, output_content))
+
+            # Extract version
+            version = self.extract_version(config.version_pattern, output_content)
+
+            if success:
+                msg = "PASSED"
+                if version:
+                    msg += f" (v{version})"
+            else:
+                msg = "FAILED - success pattern not found in output"
+                if result.returncode != 0:
+                    msg += f" (exit code: {result.returncode})"
+
+            return TestResult(
+                name=config.name,
+                passed=success,
+                message=msg,
+                version=version,
+                elapsed_time=elapsed,
+                executable_path=exe_path,
+            )
+
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
+            return TestResult(
+                name=config.name,
+                passed=False,
+                message=f"TIMEOUT after {config.timeout}s",
+                elapsed_time=elapsed,
+                executable_path=exe_path,
+                error="timeout",
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            return TestResult(
+                name=config.name,
+                passed=False,
+                message=f"ERROR: {str(e)}",
+                elapsed_time=elapsed,
+                executable_path=exe_path,
+                error=str(e),
+            )
+
+    def run_all(
+        self,
+        only: Optional[List[str]] = None,
+        skip: Optional[List[str]] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, TestResult]:
+        """Run all configured tests."""
+        skip = skip or []
+
+        # Determine which tests to run
+        if only:
+            test_ids = [t for t in only if t in self.configs]
+        else:
+            test_ids = list(self.configs.keys())
+
+        # Filter out skipped tests
+        test_ids = [t for t in test_ids if t not in skip]
+
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory(prefix="autotest_") as tmpdir:
+            work_dir = Path(tmpdir)
+
+            for test_id in test_ids:
+                config = self.configs[test_id]
+
+                if not dry_run:
+                    print(f"  Testing {config.name}...", end=" ", flush=True)
+
+                result = self.run_test(test_id, work_dir, dry_run)
+                self.results[test_id] = result
+
+                if dry_run:
+                    print(f"  {config.name}: {result.message}")
+                elif result.passed:
+                    print(f"\033[32m✓\033[0m {result.message}")
+                elif result.skipped:
+                    print(f"\033[33m○\033[0m {result.message}")
+                else:
+                    print(f"\033[31m✗\033[0m {result.message}")
+
+        return self.results
+
+
+# =============================================================================
+# CLI Interface
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Test computational chemistry software installations",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                      Run all tests
+  %(prog)s --list               List available tests
+  %(prog)s --only orca_serial   Run only ORCA serial test
+  %(prog)s --skip crest         Skip CREST test
+  %(prog)s --json               Output results as JSON
+  %(prog)s --dry-run            Show what would run without running
+  %(prog)s --cores 8            Use 8 cores for parallel tests
+  %(prog)s --config my.yaml     Use custom config file
+        """,
+    )
+
+    parser.add_argument(
+        "--list", "-l",
+        action="store_true",
+        help="List available tests and exit",
+    )
+    parser.add_argument(
+        "--only", "-o",
+        nargs="+",
+        metavar="TEST",
+        help="Only run specified test(s)",
+    )
+    parser.add_argument(
+        "--skip", "-s",
+        nargs="+",
+        metavar="TEST",
+        help="Skip specified test(s)",
+    )
+    parser.add_argument(
+        "--json", "-j",
+        action="store_true",
+        help="Output results as JSON",
+    )
+    parser.add_argument(
+        "--dry-run", "-n",
+        action="store_true",
+        help="Show what would run without actually running tests",
+    )
+    parser.add_argument(
+        "--cores", "-c",
+        type=int,
+        metavar="N",
+        help="Number of cores for parallel tests (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Verbose output",
+    )
+    parser.add_argument(
+        "--input-dir", "-i",
+        type=Path,
+        default=None,
+        help="Directory containing input files (default: ./inputs)",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to YAML config file (default: ./config.yaml)",
+    )
+
+    args = parser.parse_args()
+
+    # Load configuration
+    config = load_config(args.config)
+
+    # Initialize tester
+    tester = CompChemTester(
+        input_dir=args.input_dir,
+        parallel_cores=args.cores,
+        verbose=args.verbose,
+        config=config,
+    )
+
+    # List tests
+    if args.list:
+        print("\nAvailable tests:")
+        print("-" * 60)
+        for test_id, config in tester.configs.items():
+            exe = tester.find_executable(config.executable_paths)
+            status = "\033[32m✓\033[0m" if exe else "\033[31m✗\033[0m"
+            exe_info = f"({exe})" if exe else "(not found)"
+            print(f"  {status} {test_id:15} {config.description}")
+            if args.verbose:
+                print(f"                     {exe_info}")
+        print()
+        return 0
+
+    # Run tests
+    if not args.json:
+        print("\n" + "=" * 60)
+        print("Computational Chemistry Software Test Suite")
+        print(f"Using {tester.parallel_cores} cores for parallel tests")
+        print("=" * 60 + "\n")
+
+    results = tester.run_all(
+        only=args.only,
+        skip=args.skip,
+        dry_run=args.dry_run,
+    )
+
+    # Output results
+    if args.json:
+        output = {
+            "summary": {
+                "total": len(results),
+                "passed": sum(1 for r in results.values() if r.passed),
+                "failed": sum(1 for r in results.values() if not r.passed and not r.skipped),
+                "skipped": sum(1 for r in results.values() if r.skipped),
+            },
+            "tests": {k: v.to_dict() for k, v in results.items()},
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        # Print summary
+        passed = sum(1 for r in results.values() if r.passed)
+        failed = sum(1 for r in results.values() if not r.passed and not r.skipped)
+        skipped = sum(1 for r in results.values() if r.skipped)
+
+        print("\n" + "=" * 60)
+        print(f"Summary: {passed} passed, {failed} failed, {skipped} skipped")
+        print("=" * 60 + "\n")
+
+    # Return appropriate exit code
+    if any(not r.passed and not r.skipped for r in results.values()):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

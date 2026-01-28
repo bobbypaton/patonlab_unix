@@ -1,0 +1,54 @@
+# .bash_profile
+
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+	. ~/.bashrc
+fi
+
+# User specific environment and startup programs
+
+# Initialize library paths
+export LD_LIBRARY_PATH="/usr/local/intel64_lin:/usr/local/cuda-10.1/lib64:${LD_LIBRARY_PATH}"
+
+# ==================== GAUSSIAN ====================
+g16root="/usr/local/Gaussian/G16C"
+export g16root
+if [ -f "${g16root}/g16/bsd/g16.profile" ]; then
+	. "${g16root}/g16/bsd/g16.profile"
+fi
+PATH="${PATH}:${HOME}/.local/bin:${HOME}/bin:/usr/local/nbo7/bin"
+export PATH
+
+# ==================== QCHEM ====================
+if [ -f /usr/local/qchem6/qcenv.sh ]; then
+	. /usr/local/qchem6/qcenv.sh
+fi
+
+# ==================== ORCA 5.02 ====================
+export ORCA_ROOT=/usr/local/ORCA502
+export MPI_ROOT=/usr/local/openmpi-4.1.1
+export PATH="${ORCA_ROOT}:${MPI_ROOT}:${PATH}"
+export LD_LIBRARY_PATH="${ORCA_ROOT}:${MPI_ROOT}:/usr/local/lib:${LD_LIBRARY_PATH}"
+
+
+# ==================== XTB and CREST ====================
+XTBHOME=/usr/local/xtb
+export XTBHOME
+export XTBPATH="${XTBHOME}/share/xtb:${HOME}"
+export MANPATH="${MANPATH}:${XTBHOME}/share/man"
+export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:${XTBHOME}/share/xtb"
+export PATH="${PATH}:${XTBHOME}/bin"
+
+# ==================== COSMOtherm ====================
+export PATH="/usr/local/BIOVIA/COSMOtherm2021/COSMOthermX:/usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/BIN-LINUX:${PATH}"
+
+# ==================== TURBOMOLE ====================
+export TURBODIR=/usr/local/BIOVIA/TURBOMOLE
+export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(sysname):${PATH}"
+
+# ==================== NCIPlot ====================
+export NCIPLOT_HOME=/usr/local/nciplot
+export PATH="/usr/local/nciplot:${PATH}"
+
+# ==================== Group Python utilities ====================
+export PATH="${PATH}:/usr/local/patonlab/python:/usr/local/patonlab/bash:/usr/local/patonlab/autotest"

@@ -1,0 +1,89 @@
+ctd=BP_TZVP_19.ctd CDIR=/usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/CTDATA-FILES/ LDIR=/usr/local/BIOVIA/COSMOtherm2021/licensefiles/                  # Global command line
+FDIR=/usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/DATABASE-COSMO/BP-TZVP-COSMO UNIT=SI
+!! Abraham parameter and Abraham logP(solvent-water) property computation via sigma-moment QSPR !! # Comment line
+f = 5,5-diphenylhydantoin_c0.cosmo                                                                 # Compound input Solute
+f = aspirin_c0.cosmo                                                                               # Compound input Solute
+f = naproxen_c0.cosmo                                                                              # Compound input Solute
+f = naphthalene_c0.cosmo                                                                           # Compound input Solute
+f = phenol_c0.cosmo                                                                                # Compound input Solute
+PROPQSPR=BP-TZVP-Abraham-logP(Octanol-wet-Water).prop noaptab                                      # Compute Abraham-logP(Octanol-wet-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(Octanol-dry-Water).prop noaptab                                      # Compute Abraham-logP(Octanol-dry-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(Acetone-Water).prop     noaptab                                      # Compute Abraham-logP(Acetone-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(Benzene-Water).prop     noaptab                                      # Compute Abraham-logP(Benzene-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(Heptane-Water).prop     noaptab                                      # Compute Abraham-logP(Heptane-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(CH2Cl2-Water).prop      noaptab                                      # Compute Abraham-logP(Methylenechloride-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(CHCl3-Water).prop       noaptab                                      # Compute Abraham-logP(Chloroform-Water) for all molecules
+PROPQSPR=BP-TZVP-Abraham-logP(CCl4-Water).prop        noaptab                                      # Compute Abraham-logP(Tetrachloromethane-Water) for all molecules
+#
+#
+# Estimation of the five Linear Free Energy Parameters of Abraham using sigma-moment QSPR
+# and estimation of several different Solvent-Water Partition Coefficient logP(Solvent-Water)
+# using Abraham coefficients.
+#
+# The sigma-moment QSPR for the five Abraham parameters as well as the Abraham property
+# computation of a property logP(Solvent-Water) is toggled with command
+# PROPQSPR=BP-TZVP-Abraham-logP(Solvent-Water).prop in the mixture section
+# of the input file (see below).
+#
+# High quality COSMO-files (BP-TZVP-COSMO) and appropriate parametrization are used.
+#
+# The estimated Abraham parameter values and the computed Abraham property can be found in the
+# compound output section of output-file ABRAHAM-PROPERTY-QSPR-TZVP.out and in the table-file
+# ABRAHAM-PROPERTY-QSPR-TZVP.tab.
+#
+# In Abrahams formalism, the free energy of a solute and related macroscopic solute properties (SP)
+# such as partition coefficients and solubility are described by five linear free energy relationship
+# (LFER) descriptors:  log(SP) = c_0 + c_e*E + c_s*S + c_a*A + c_b*B + c_v*V
+#
+# The five Abraham parameters are:
+# Abraham Parameter V (hydrophobicity)
+# Abraham Parameter B (hydrogen bond acidity)
+# Abraham Parameter S (polarity/polarizability)
+# Abraham Parameter A (hydrogen bond acidity)
+# Abraham Parameter E (excess molar refraction)
+#
+# The five Abraham LFER parameter can be related to COSMOtherms sigma-moments. The QSPR-property files
+# BP-TZVP-Abraham-logP(Solvent-Water).prop gives this relationship for BP-TZVP level COSMO-files.
+#
+# The six Abraham LFER coefficients c_0, c_e, c_s, c_a, c_b and c_v define a Abraham property.
+# These parameters can be given in a COSMOtherm QSPR-property file. In this input example, the
+# Abraham LFER-coefficients for several solvent-water partition properties logPOW (solvent-water)
+# are read from QSPR-property files BP-TZVP-Abraham-logP(Solvent-Water).prop, where "Solvent" is
+# "Octanol-wet" (wet 1-octanol), "Octanol-dry" (dry 1-octanol), "Acetone" (propanone),
+# "Benzene" (benzene), "Heptane" (heptane), "CH2CL2" (methylene chloride), "CHCL3" (chloroform)
+# and "CCl4" (tetrachloromethane). If COSMOtherm finds such Abraham LFER-coefficients
+# in a QSPR-property file with the five Abraham QSPR-property definitions, it automatically computes the
+# Abraham property logP(Solvent-Water) defined by these coefficients (in addition to the five Abraham
+# QSPR-properties E, S, A, B and V)).
+#
+# E.g. the QSPR-property file BP-TZVP-Abraham-logP(Octanol-wet-Water).prop holds the following six
+# Abraham coefficients, which define the partition coefficient between wet octanol and water logPOW:
+#
+# ABRAHAM_COEFF={3.814 -3.460 -1.054 0.034 0.562 0.088} ABRAHAM_PROP=logP(Octanol-wet-Water)
+# Coefficient:   c_V    c_B    c_S   c_A   c_E   c_0
+#
+# The usage and application of Abrahams solubility model and coefficients within COSMOtherm is explained
+# in section 5.5 "Property Computation via sigma-moment QSPR" of the COSMOtherm users manual.
+#
+# A closer description of the definition, use and fit of Abrahams Linear Free Energy Parameters
+# is given in the article of Zissimos et al. in J. Chem. Inf. Comput. Sci. 42 (2002) 1320-1331.
+#
+#
+# Options used                 - Explanation
+#
+# ctd=...           - give name of parameterization file
+# cdir=...          - give directory (search path) of parameterization file
+# fdir=...          - give directory (search path) of compounds COSMO-files
+# UNIT=SI           - print option: all output will be in SI-UNITS
+#
+# f=*.cosmo         - compound input
+#
+# PROPQSPR=xyz.prop - toggle sigma-moment QSPR computation using property file
+#                     xyz.prop. The property file is read from "cdir".
+# noaptab           - print option: do not print Abraham parameter coefficients to the table file.
+#                     only the final property computed from the Abraham coefficients will be printed.
+#
+#
+#
+#
+#

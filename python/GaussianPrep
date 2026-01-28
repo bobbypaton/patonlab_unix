@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+
+"""
+GaussianPrep - Generate Gaussian input files from computational chemistry output files.
+
+Reads output files (.out or .log) from various computational chemistry programs,
+extracts the final geometry, and creates new Gaussian input files with specified
+parameters.
+
+Supported input formats (via cclib):
+    - Gaussian (.log, .out)
+    - ORCA (.out)
+    - QChem (.out)
+    - GAMESS (.log, .out)
+    - Molpro (.out)
+    - NWChem (.out)
+    - Psi4 (.out)
+    - And others supported by cclib
+
+Author: Paton Research Group (patonlab@colostate.edu)
+"""
+
+import sys
+import os
+import argparse
+from typing import Optional, List, Any, Tuple
+from pathlib import Path
+
+try:
+    import cclib
+except ImportError:
+    print("Error: cclib is required. Install with: pip install cclib", file=sys.stderr)
+    sys.exit(1)
+
+
+# Periodic table: index = atomic number
+ELEMENTS = [
+    "", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si",
+    "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni",
+    "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo",
+    "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba",
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At",
+    "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
+    "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl",
+    "Mc", "Lv", "Ts", "Og"
+]
+
+
+def parse_output_file(filepath: str) -> Optional[Any]:
+    """
+    Parse computational chemistry output file using cclib.
+    
+    Args:
+        filepath: Path to output file (.log or .out)
+    
+    Returns:
+        Parsed cclib data object, or None if parsing fails
+    """
+    if not os.path.isfile(filepath):
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        return None
+    
+    try:
+        parser = cclib.io.ccopen(filepath)
+        if parser is None:
+            print(f"Error: cclib cannot parse {filepath}", file=sys.stderr)
+            return None
+        data = parser.parse()
+        return data
+    except Exception as e:
+        print(f"Error parsing {filepath}: {e}", file=sys.stderr)
+        return None
+
+
+def validate_molecular_data(data: Any, filepath: str) -> bool:
+    """
+    Validate that parsed data contains required molecular information.
+    
+    Args:
+        data: Parsed cclib data object
+        filepath: Original file path for error reporting
+    
+    Returns:
+        True if data is valid, False otherwise
+    """
+    if data is None:
+        return False
+    
+    required_attrs = ['atomnos', 'atomcoords']
+    missing = [attr for attr in required_attrs if not hasattr(data, attr)]
+    
+    if missing:
+        print(f"Error: {filepath} missing required data: {', '.join(missing)}", file=sys.stderr)
+        return False
+    
+    if len(data.atomcoords) == 0:
+        print(f"Error: {filepath} contains no geometry data", file=sys.stderr)
+        return False
+    
+    return True
+
+
+class GaussianInputWriter:
+    """
+    Write Gaussian input files from parsed molecular data.
+    
+    Gaussian input format:
+        %chk=checkpoint.chk
+        %mem=48GB
+        %nprocshared=24
+        # route_line
+        
+        title
+        
+        charge multiplicity
+        atom_symbol  x  y  z
+        ...
+        
+        optional_lines
+        freeze_constraints
+        genecp_basis
+    """
+    
+    def __init__(self, input_file: str, config: argparse.Namespace, mol_data: Any) -> None:
+        """
+        Initialize and write Gaussian input file.
+        
+        Args:
+            input_file: Original output filename
+            config: Configuration from command-line arguments
+            mol_data: Parsed molecular data from cclib
+        """
+        self.input_file = input_file
+        self.config = config
+        self.mol_data = mol_data
+        
+        # Generate output filename
+        root = Path(input_file).stem
+        self.output_file = f"{root}_{config.append}.com"
+        self.chk_file = f"{root}_{config.append}.chk"
+        
+        self._write_input()
+    
+    def _get_charge_mult(self) -> Tuple[int, int]:
+        """Get charge and multiplicity from config or molecular data."""
+        charge = int(self.config.charge) if self.config.charge is not None else getattr(self.mol_data, 'charge', 0)
+        mult = int(self.config.mult) if self.config.mult is not None else getattr(self.mol_data, 'mult', 1)
+        return charge, mult
+    
+    def _format_coordinate(self, coord: float) -> str:
+        """Format coordinate value with appropriate precision."""
+        return f"{coord:12.8f}"
+    
+    def _write_input(self) -> None:
+        """Write the Gaussian input file."""
+        charge, mult = self._get_charge_mult()
+        
+        # Get final geometry (last set of coordinates)
+        coords = self.mol_data.atomcoords[-1]
+        atoms = [ELEMENTS[atomno] for atomno in self.mol_data.atomnos]
+        
+        try:
+            with open(self.output_file, 'w') as f:
+                # Link0 commands
+                f.write(f"%chk={self.chk_file}\n")
+                if self.config.mem:
+                    f.write(f"%mem={self.config.mem}\n")
+                if self.config.nproc:
+                    f.write(f"%nprocshared={self.config.nproc}\n")
+                
+                # Route section
+                f.write(f"# {self.config.route}\n\n")
+                
+                # Title
+                title = f"{Path(self.input_file).stem}_{self.config.append} created by GaussianPrep"
+                f.write(f"{title}\n\n")
+                
+                # Charge and multiplicity
+                f.write(f"{charge} {mult}\n")
+                
+                # Molecular coordinates
+                for atom, coord in zip(atoms, coords):
+                    x, y, z = coord
+                    f.write(f"{atom:3s} {self._format_coordinate(x)} {self._format_coordinate(y)} {self._format_coordinate(z)}\n")
+                f.write("\n")
+                
+                # Optional sections
+                if self.config.optional:
+                    for line in self.config.optional:
+                        f.write(f"{line}\n")
+                    f.write("\n")
+                
+                if self.config.freeze:
+                    for line in self.config.freeze:
+                        f.write(f"{line}\n")
+                    f.write("\n")
+                
+                if self.config.genecp:
+                    for line in self.config.genecp:
+                        f.write(f"{line}\n")
+                    f.write("\n")
+            
+            print(f"✓ Created: {self.output_file}")
+        
+        except IOError as e:
+            print(f"Error writing {self.output_file}: {e}", file=sys.stderr)
+
+
+def parse_multiline_option(value: Optional[str]) -> Optional[List[str]]:
+    """
+    Parse multiline options that may contain newlines or semicolons.
+    
+    Args:
+        value: String value to parse
+    
+    Returns:
+        List of lines, or None if value is None
+    """
+    if value is None:
+        return None
+    # Support both newline and semicolon as separators
+    return [line.strip() for line in value.replace(';', '\n').split('\n') if line.strip()]
+
+
+def main() -> None:
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Generate Gaussian input files from various computational chemistry output files (Gaussian, ORCA, QChem, GAMESS, Molpro, NWChem, Psi4, etc.)",
+        usage="%(prog)s [options] <file1>.log <file2>.out ..."
+    )
+    
+    parser.add_argument(
+        "files",
+        nargs='*',
+        help="Output files to process (.log or .out from Gaussian, ORCA, QChem, GAMESS, etc.)"
+    )
+    parser.add_argument(
+        "--nproc",
+        type=int,
+        default=16,
+        help="Number of processors (default: 16)"
+    )
+    parser.add_argument(
+        "--mem",
+        default="72GB",
+        help="Memory allocation (default: 72GB)"
+    )
+    parser.add_argument(
+        "--charge",
+        type=int,
+        default=None,
+        help="Molecular charge (defaults to value from output file)"
+    )
+    parser.add_argument(
+        "--mult",
+        type=int,
+        default=None,
+        help="Spin multiplicity (defaults to value from output file)"
+    )
+    parser.add_argument(
+        "--route",
+        default=" ",
+        help="Gaussian route line (e.g., 'B3LYP/6-31G(d) Opt'); default: blank"
+    )
+    parser.add_argument(
+        "--optional",
+        type=str,
+        default=None,
+        help="Optional lines (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--genecp",
+        type=str,
+        default=None,
+        help="GenECP basis set lines (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--freeze",
+        type=str,
+        default=None,
+        help="Coordinate constraints (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--append",
+        default="ii",
+        help="Text to append to output filenames (default: 'new')"
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate inputs
+    if not args.files:
+        parser.print_help()
+        sys.exit(1)
+    
+    # Parse multiline options
+    args.optional = parse_multiline_option(args.optional)
+    args.genecp = parse_multiline_option(args.genecp)
+    args.freeze = parse_multiline_option(args.freeze)
+    
+    # Filter valid output files
+    output_files = []
+    for file in args.files:
+        if not os.path.isfile(file):
+            print(f"Warning: File not found: {file}", file=sys.stderr)
+            continue
+        
+        ext = os.path.splitext(file)[1].lower()
+        if ext not in ['.log', '.out']:
+            print(f"Warning: Skipping {file} (expected .log or .out extension)", file=sys.stderr)
+            continue
+        
+        output_files.append(file)
+    
+    if not output_files:
+        print("Error: No valid output files provided", file=sys.stderr)
+        sys.exit(1)
+    
+    # Process each file
+    print(f"\nProcessing {len(output_files)} file(s)...\n")
+    success_count = 0
+    
+    for file in output_files:
+        mol_data = parse_output_file(file)
+        
+        if not validate_molecular_data(mol_data, file):
+            continue
+        
+        try:
+            GaussianInputWriter(file, args, mol_data)
+            success_count += 1
+        except Exception as e:
+            print(f"Error processing {file}: {e}", file=sys.stderr)
+    
+    print(f"\n✓ Successfully created {success_count}/{len(output_files)} input file(s)")
+
+
+if __name__ == "__main__":
+    main()

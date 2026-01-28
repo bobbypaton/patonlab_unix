@@ -1,0 +1,88 @@
+$title
+$symmetry c1
+$user-defined bonds    file=coord
+$coord    file=coord
+$optimize
+ internal   off
+ redundant  off
+ cartesian  on
+ global     off
+ basis      off
+$atoms
+c  1-3,5-8                                                                     \
+   basis =c def2-mTZVPP                                                        \
+   jbas  =c def2-mTZVPP
+o  4,9                                                                        \
+   basis =o def2-mTZVPP                                                        \
+   jbas  =o def2-mTZVPP
+h  10-21                                                                       \
+   basis =h def2-mTZVPP                                                        \
+   jbas  =h def2-mTZVPP
+$scfmo   file=mos
+$closed shells
+ a       1-35                                   ( 2 )
+$scfiterlimit      125
+$thize     0.10000000E-06
+$thime        4
+$scfdamp   start=0.300  step=0.050  min=0.100
+$scfdump
+$scfintunit
+ unit=30       size=1000     file=twoint
+$scfdiis
+$scforbitalshift  automatic=.1
+$drvopt
+   cartesian  on
+   basis      off
+   global     off
+   hessian    on
+   dipole     on
+   nuclear polarizability
+$interconversion  off
+   qconv=1.d-7
+   maxiter=25
+$coordinateupdate
+   dqmax=0.3
+   interpolate  on
+   statistics    5
+$forceupdate
+   ahlrichs numgeo=0  mingeo=3 maxgeo=4 modus=<g|dq> dynamic fail=0.3
+   threig=0.005  reseig=0.005  thrbig=3.0  scale=1.00  damping=0.0
+$forceinit on
+   diag=default
+$energy    file=energy
+$grad    file=gradient
+$forceapprox    file=forceapprox
+$dft
+   functional r2scan-3c
+   gridsize   m4
+$scfconv        6
+$ricore     1000
+$rij
+$rundimensions
+   natoms=21
+   nbf(CAO)=252
+   nbf(AO)=241
+$last step     ridft
+$maxcor  1000
+$rpacor  1000
+$pop
+$statpt
+   itrvec 0
+   tradius 0.3
+   threchange  5.0d-7
+   thrrmsgrad  5.0d-5
+   thrmaxdispl 1.0d-1
+   thrrmsdispl 1.0d-1
+$disp4
+$last SCF energy change = -424.28282
+$charge from ridft
+          0.000 (not to be modified here)
+$dipole from ridft
+  x    -0.22601807219131    y     0.26772061826430    z    -0.78448462339887    a.u.
+   | dipole | =    2.1838110882  debye
+$basis file=basis
+$jbas file=auxbasis
+$orbital_max_rnorm 0.28503296537609E-06
+$subenergy  Etot         E1                  Ej                Ex                 Ec                 En                 Disp
+-424.2828242561    -1565.314734416     701.8765922391    -57.25439845807    -2.249714166076     498.6530748933    0.6355651962325E-02
+$end

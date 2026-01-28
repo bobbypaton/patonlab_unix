@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+
+"""
+Generate submission scripts for computational chemistry jobs.
+
+Supports: Gaussian16, ORCA, QChem, XTB, CREST
+
+Note: These scripts are designed for machines without job scheduling systems.
+    Always check for other users running jobs before starting your own to
+    avoid resource conflicts.
+
+Author: Paton Research Group (patonlab@colostate.edu)
+"""
+
+import os
+import sys
+import stat
+import shutil
+import argparse
+import shlex
+from typing import Optional, List
+
+
+# Define executables with fallback locations
+EXECUTABLES = {
+    'g16': ['/usr/local/Gaussian/G16C/g16/g16'],
+    'orca': ['/usr/local/ORCA502/orca'],
+    'qchem': ['/usr/local/qchem/bin/qchem'],
+    'xtb': ['/usr/local/xtb/bin/xtb'],
+    'crest': ['/usr/local/xtb/crest'],
+}
+
+# File extension to program mapping (defaults - can override with --program)
+# Note: .inp works for both ORCA (default) and QChem
+#       .xyz works for both CREST (default) and XTB
+EXT_TO_PROGRAM = {
+    '.com': 'g16',
+    '.gjf': 'g16',
+    '.inp': 'orca',    # default for .inp; use --program qchem to override
+    '.xyz': 'crest',   # default for .xyz; use --program xtb to override
+}
+
+
+def find_executable(program: str) -> Optional[str]:
+    """
+    Find the path to an executable using shutil.which() and fallback locations.
+    
+    Args:
+        program: Program name (e.g., 'g16', 'orca')
+    
+    Returns:
+        Path to executable, or None if not found
+    """
+    # Try system PATH first
+    exec_path = shutil.which(program)
+    if exec_path:
+        return exec_path
+    
+    # Try hardcoded fallback locations
+    if program in EXECUTABLES:
+        for path in EXECUTABLES[program]:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    
+    return None
+
+
+def validate_executable(program: str) -> str:
+    """
+    Validate that an executable exists and is accessible.
+    
+    Args:
+        program: Program name
+    
+    Returns:
+        Path to validated executable
+    
+    Raises:
+        FileNotFoundError: If executable cannot be found
+    """
+    exec_path = find_executable(program)
+    if not exec_path:
+        raise FileNotFoundError(f"Executable '{program}' not found in PATH or fallback locations")
+    return exec_path
+
+
+class Logger:
+    """
+    Dual output logger that writes to both terminal and file.
+    """
+    def __init__(self, filepath: str) -> None:
+        self._log = open(filepath, 'w')
+
+    def write(self, message: str) -> None:
+        print(message, end='')
+        self._log.write(message)
+
+    def close(self) -> None:
+        self._log.close()
+
+    def __enter__(self) -> 'Logger':
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
+
+
+def get_output_filename(input_file: str) -> str:
+    """
+    Determine output filename based on input file extension.
+    
+    Args:
+        input_file: Path to input file
+    
+    Returns:
+        Path to output file
+    """
+    root, ext = os.path.splitext(input_file)
+    if ext in ('.com', '.gjf'):
+        return root + '.log'
+    else:
+        return root + '.out'
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Generate submission scripts for computational chemistry jobs",
+        usage="%(prog)s [options] <input1> <input2> ..."
+    )
+    parser.add_argument("inputfiles", nargs='*', help="Input files (.com, .inp, .xyz, etc.)")
+    parser.add_argument("--nproc", type=int, default=24, help="Number of processors (default: 24)")
+    parser.add_argument("--program", default=None, help="Force specific program (g16, orca, qchem, xtb, crest)")
+    parser.add_argument("--script", default="sub.sh", help="Output submission script name (default: sub.sh)")
+    parser.add_argument("--args", default="", help="Additional runtime arguments for the program")
+    
+    args = parser.parse_args()
+    
+    # Validate input files exist and have valid extensions
+    if not args.inputfiles:
+        parser.print_help()
+        sys.exit(1)
+    
+    allowed_extensions = set(EXT_TO_PROGRAM.keys())
+    input_files = []
+    for infile in args.inputfiles:
+        if not os.path.isfile(infile):
+            print(f"Warning: File not found: {infile}", file=sys.stderr)
+            continue
+        
+        root, ext = os.path.splitext(infile)
+        if ext not in allowed_extensions:
+            print(f"Error: Invalid file extension '{ext}' for {infile}", file=sys.stderr)
+            print(f"Allowed extensions: {', '.join(sorted(allowed_extensions))}", file=sys.stderr)
+            sys.exit(1)
+        
+        input_files.append(infile)
+    
+    if not input_files:
+        print("Error: No valid input files provided", file=sys.stderr)
+        sys.exit(1)
+    
+    # Generate submission script
+    try:
+        with Logger(args.script) as sub_script:
+            for infile in input_files:
+                root, ext = os.path.splitext(infile)
+                outfile = get_output_filename(infile)
+                
+                # Determine which program to use
+                if args.program:
+                    program = args.program.lower()
+                    if program not in EXECUTABLES:
+                        print(f"Error: Unknown program '{program}'", file=sys.stderr)
+                        sys.exit(1)
+                else:
+                    program = EXT_TO_PROGRAM.get(ext)
+                    if not program:
+                        print(f"Error: Cannot determine program for file extension '{ext}'", file=sys.stderr)
+                        sys.exit(1)
+                
+                # Validate and get executable path
+                try:
+                    exec_path = validate_executable(program)
+                except FileNotFoundError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    sys.exit(1)
+                
+                # Generate command line (using shlex.quote for safety)
+                exec_quoted = shlex.quote(exec_path)
+                infile_quoted = shlex.quote(infile)
+                outfile_quoted = shlex.quote(outfile)
+                
+                if program == 'qchem':
+                    command = f"{exec_quoted} {infile_quoted} -nt {args.nproc} {args.args} > {outfile_quoted}"
+                elif program == 'crest':
+                    command = f"{exec_quoted} {infile_quoted} -T {args.nproc} {args.args} > {outfile_quoted}"
+                else:
+                    # g16, orca, xtb
+                    args_str = f" {args.args}" if args.args else ""
+                    command = f"{exec_quoted} {infile_quoted}{args_str} > {outfile_quoted}"
+                
+                sub_script.write(f"\n{command}")
+        
+        # Make script executable
+        os.chmod(args.script, stat.S_IRWXU)
+        print(f"\n✓ Submission script created: {args.script}")
+        print(f"✓ Run with: nohup ./{args.script} &")
+    
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
