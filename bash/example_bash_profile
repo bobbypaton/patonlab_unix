@@ -24,8 +24,8 @@ if [ -f /usr/local/qchem6/qcenv.sh ]; then
 	. /usr/local/qchem6/qcenv.sh
 fi
 
-# ==================== ORCA 5.02 ====================
-export ORCA_ROOT=/usr/local/ORCA502
+# ==================== ORCA 6 ====================
+export ORCA_ROOT=/usr/local/ORCA6
 export MPI_ROOT=/usr/local/openmpi-4.1.1
 export PATH="${ORCA_ROOT}:${MPI_ROOT}:${PATH}"
 export LD_LIBRARY_PATH="${ORCA_ROOT}:${MPI_ROOT}:/usr/local/lib:${LD_LIBRARY_PATH}"
@@ -44,7 +44,7 @@ export PATH="/usr/local/BIOVIA/COSMOtherm2021/COSMOthermX:/usr/local/BIOVIA/COSM
 
 # ==================== TURBOMOLE ====================
 export TURBODIR=/usr/local/BIOVIA/TURBOMOLE
-#export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(sysname):${PATH}"
+export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(sysname):${PATH}"
 
 # ==================== NCIPlot ====================
 export NCIPLOT_HOME=/usr/local/nciplot
