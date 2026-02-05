@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+
+"""
+OrcaPrep - Generate ORCA input files from computational chemistry output files.
+
+Reads output files (.out or .log) from various computational chemistry programs,
+extracts the final geometry, and creates new ORCA input files with specified
+parameters.
+
+Supported input formats (via cclib):
+    - Gaussian (.log, .out)
+    - ORCA (.out)
+    - QChem (.out)
+    - GAMESS (.log, .out)
+    - Molpro (.out)
+    - NWChem (.out)
+    - Psi4 (.out)
+    - And others supported by cclib
+
+Author: Paton Research Group (patonlab@colostate.edu)
+"""
+
+import sys
+import os
+import argparse
+from typing import Optional, List, Any, Tuple
+from pathlib import Path
+
+try:
+    import cclib
+except ImportError:
+    print("Error: cclib is required. Install with: pip install cclib", file=sys.stderr)
+    sys.exit(1)
+
+
+# Periodic table: index = atomic number
+ELEMENTS = [
+    "", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si",
+    "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni",
+    "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo",
+    "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba",
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At",
+    "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
+    "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl",
+    "Mc", "Lv", "Ts", "Og"
+]
+
+
+def parse_output_file(filepath: str) -> Optional[Any]:
+    """
+    Parse computational chemistry output file using cclib.
+
+    Args:
+        filepath: Path to output file (.log or .out)
+
+    Returns:
+        Parsed cclib data object, or None if parsing fails
+    """
+    if not os.path.isfile(filepath):
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        return None
+
+    try:
+        parser = cclib.io.ccopen(filepath)
+        if parser is None:
+            print(f"Error: cclib cannot parse {filepath}", file=sys.stderr)
+            return None
+        data = parser.parse()
+        return data
+    except Exception as e:
+        print(f"Error parsing {filepath}: {e}", file=sys.stderr)
+        return None
+
+
+def validate_molecular_data(data: Any, filepath: str) -> bool:
+    """
+    Validate that parsed data contains required molecular information.
+
+    Args:
+        data: Parsed cclib data object
+        filepath: Original file path for error reporting
+
+    Returns:
+        True if data is valid, False otherwise
+    """
+    if data is None:
+        return False
+
+    required_attrs = ['atomnos', 'atomcoords']
+    missing = [attr for attr in required_attrs if not hasattr(data, attr)]
+
+    if missing:
+        print(f"Error: {filepath} missing required data: {', '.join(missing)}", file=sys.stderr)
+        return False
+
+    if len(data.atomcoords) == 0:
+        print(f"Error: {filepath} contains no geometry data", file=sys.stderr)
+        return False
+
+    return True
+
+
+class OrcaInputWriter:
+    """
+    Write ORCA input files from parsed molecular data.
+
+    ORCA input format:
+        ! keywords
+        %pal nprocs N end
+        %maxcore memory_per_core_MB
+        %basis ... end
+        %geom Constraints ... end end
+        * xyz charge multiplicity
+        atom_symbol  x  y  z
+        ...
+        *
+    """
+
+    def __init__(self, input_file: str, config: argparse.Namespace, mol_data: Any) -> None:
+        """
+        Initialize and write ORCA input file.
+
+        Args:
+            input_file: Original output filename
+            config: Configuration from command-line arguments
+            mol_data: Parsed molecular data from cclib
+        """
+        self.input_file = input_file
+        self.config = config
+        self.mol_data = mol_data
+
+        # Generate output filename
+        root = Path(input_file).stem
+        self.output_file = f"{root}_{config.append}.inp"
+
+        self._write_input()
+
+    def _get_charge_mult(self) -> Tuple[int, int]:
+        """Get charge and multiplicity from config or molecular data."""
+        charge = int(self.config.charge) if self.config.charge is not None else getattr(self.mol_data, 'charge', 0)
+        mult = int(self.config.mult) if self.config.mult is not None else getattr(self.mol_data, 'mult', 1)
+        return charge, mult
+
+    def _format_coordinate(self, coord: float) -> str:
+        """Format coordinate value with appropriate precision."""
+        return f"{coord:14.10f}"
+
+    def _write_input(self) -> None:
+        """Write the ORCA input file."""
+        charge, mult = self._get_charge_mult()
+
+        # Get final geometry (last set of coordinates)
+        coords = self.mol_data.atomcoords[-1]
+        atoms = [ELEMENTS[atomno] for atomno in self.mol_data.atomnos]
+
+        try:
+            with open(self.output_file, 'w') as f:
+                # Keyword line
+                f.write(f"! {self.config.route}\n")
+
+                # Parallel execution block
+                if self.config.nproc and self.config.nproc > 1:
+                    f.write(f"%pal nprocs {self.config.nproc} end\n")
+
+                # Memory per core
+                if self.config.maxcore:
+                    f.write(f"%maxcore {self.config.maxcore}\n")
+
+                # Additional blocks (e.g., %scf, %tddft, %cpcm, etc.)
+                if self.config.blocks:
+                    for line in self.config.blocks:
+                        f.write(f"{line}\n")
+
+                # Basis set block
+                if self.config.basis:
+                    f.write("%basis\n")
+                    for line in self.config.basis:
+                        f.write(f"  {line}\n")
+                    f.write("end\n")
+
+                # Geometry constraints block
+                if self.config.constraints:
+                    f.write("%geom\n  Constraints\n")
+                    for line in self.config.constraints:
+                        f.write(f"    {line}\n")
+                    f.write("  end\nend\n")
+
+                # Coordinate block
+                f.write(f"* xyz {charge} {mult}\n")
+                for atom, coord in zip(atoms, coords):
+                    x, y, z = coord
+                    f.write(f"  {atom:3s} {self._format_coordinate(x)} {self._format_coordinate(y)} {self._format_coordinate(z)}\n")
+                f.write("*\n")
+
+            print(f"  Created: {self.output_file}")
+
+        except IOError as e:
+            print(f"Error writing {self.output_file}: {e}", file=sys.stderr)
+
+
+def parse_multiline_option(value: Optional[str]) -> Optional[List[str]]:
+    """
+    Parse multiline options that may contain newlines or semicolons.
+
+    Args:
+        value: String value to parse
+
+    Returns:
+        List of lines, or None if value is None
+    """
+    if value is None:
+        return None
+    # Support both newline and semicolon as separators
+    return [line.strip() for line in value.replace(';', '\n').split('\n') if line.strip()]
+
+
+def main() -> None:
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Generate ORCA input files from various computational chemistry output files (Gaussian, ORCA, QChem, GAMESS, Molpro, NWChem, Psi4, etc.)",
+        usage="%(prog)s [options] <file1>.log <file2>.out ..."
+    )
+
+    parser.add_argument(
+        "files",
+        nargs='*',
+        help="Output files to process (.log or .out from Gaussian, ORCA, QChem, GAMESS, etc.)"
+    )
+    parser.add_argument(
+        "--nproc",
+        type=int,
+        default=16,
+        help="Number of processors (default: 16)"
+    )
+    parser.add_argument(
+        "--maxcore",
+        type=int,
+        default=5000,
+        help="Memory per core in MB for %%maxcore (default: 5000)"
+    )
+    parser.add_argument(
+        "--charge",
+        type=int,
+        default=None,
+        help="Molecular charge (defaults to value from output file)"
+    )
+    parser.add_argument(
+        "--mult",
+        type=int,
+        default=None,
+        help="Spin multiplicity (defaults to value from output file)"
+    )
+    parser.add_argument(
+        "--route",
+        default=" ",
+        help="ORCA keyword line (e.g., 'B3LYP def2-SVP Opt'); default: blank"
+    )
+    parser.add_argument(
+        "--blocks",
+        type=str,
+        default=None,
+        help="Additional ORCA blocks, e.g. '%%scf MaxIter 300 end' (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--basis",
+        type=str,
+        default=None,
+        help="%%basis block content for element-specific basis sets (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--constraints",
+        type=str,
+        default=None,
+        help="%%geom Constraints block content (separate multiple lines with semicolons)"
+    )
+    parser.add_argument(
+        "--append",
+        default="ii",
+        help="Text to append to output filenames (default: 'ii')"
+    )
+
+    args = parser.parse_args()
+
+    # Validate inputs
+    if not args.files:
+        parser.print_help()
+        sys.exit(1)
+
+    # Parse multiline options
+    args.blocks = parse_multiline_option(args.blocks)
+    args.basis = parse_multiline_option(args.basis)
+    args.constraints = parse_multiline_option(args.constraints)
+
+    # Filter valid output files
+    output_files = []
+    for file in args.files:
+        if not os.path.isfile(file):
+            print(f"Warning: File not found: {file}", file=sys.stderr)
+            continue
+
+        ext = os.path.splitext(file)[1].lower()
+        if ext not in ['.log', '.out']:
+            print(f"Warning: Skipping {file} (expected .log or .out extension)", file=sys.stderr)
+            continue
+
+        output_files.append(file)
+
+    if not output_files:
+        print("Error: No valid output files provided", file=sys.stderr)
+        sys.exit(1)
+
+    # Process each file
+    print(f"\nProcessing {len(output_files)} file(s)...\n")
+    success_count = 0
+
+    for file in output_files:
+        mol_data = parse_output_file(file)
+
+        if not validate_molecular_data(mol_data, file):
+            continue
+
+        try:
+            OrcaInputWriter(file, args, mol_data)
+            success_count += 1
+        except Exception as e:
+            print(f"Error processing {file}: {e}", file=sys.stderr)
+
+    print(f"\nSuccessfully created {success_count}/{len(output_files)} input file(s)")
+
+
+if __name__ == "__main__":
+    main()
