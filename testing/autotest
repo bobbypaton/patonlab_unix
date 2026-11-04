@@ -45,6 +45,7 @@ except ImportError:
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DEFAULT_INPUT_DIR = SCRIPT_DIR / "inputs"
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "config.yaml"
+LOCAL_CONFIG_FILE = SCRIPT_DIR / "config.local.yaml"  # per-machine overrides, not tracked by git
 
 @dataclass
 class TestConfig:
@@ -79,11 +80,8 @@ def expand_path(path: str) -> str:
     return path
 
 
-def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load configuration from YAML file."""
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_FILE
-
+def read_yaml(config_path: Path) -> Dict[str, Any]:
+    """Read one YAML config file, returning {} if it is missing or unreadable."""
     if not config_path.exists():
         return {}
 
@@ -94,6 +92,26 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
     with open(config_path) as f:
         return yaml.safe_load(f) or {}
+
+
+def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+
+    With no explicit path, config.yaml is read and then config.local.yaml (if
+    present) is merged on top, section by section, so each machine can override
+    paths or tests without editing the tracked config.yaml.
+    """
+    if config_path is not None:
+        return read_yaml(config_path)
+
+    config = read_yaml(DEFAULT_CONFIG_FILE)
+    for key, value in read_yaml(LOCAL_CONFIG_FILE).items():
+        if isinstance(value, dict) and isinstance(config.get(key), dict):
+            config[key] = {**config[key], **value}
+        else:
+            config[key] = value
+    return config
 
 
 def get_test_configs(
@@ -146,8 +164,10 @@ def get_test_configs(
             name="ORCA (serial)",
             description="ORCA quantum chemistry in serial mode",
             executable_paths=get_exe_paths("orca", [
+                "${ORCA_ROOT}/orca",
+                "/usr/local/ORCA6/orca",
+                "/opt/apps/ORCA6/orca_6_1_0/orca",
                 "orca",
-                "/usr/local/ORCA502/orca",
                 "/usr/local/orca/orca",
                 "/opt/orca/orca",
             ]),
@@ -162,8 +182,10 @@ def get_test_configs(
             name="ORCA (parallel)",
             description=f"ORCA quantum chemistry with {parallel_cores} cores",
             executable_paths=get_exe_paths("orca", [
+                "${ORCA_ROOT}/orca",
+                "/usr/local/ORCA6/orca",
+                "/opt/apps/ORCA6/orca_6_1_0/orca",
                 "orca",
-                "/usr/local/ORCA502/orca",
                 "/usr/local/orca/orca",
                 "/opt/orca/orca",
             ]),
@@ -355,15 +377,26 @@ class CompChemTester:
         """Return default number of cores for parallel tests."""
         return 8
 
+    @staticmethod
+    def is_gnome_orca(path: str) -> bool:
+        """GNOME's screen reader is also installed as orca (a Python script, not an ELF binary)."""
+        if os.path.basename(path) != "orca":
+            return False
+        try:
+            with open(path, "rb") as f:
+                return f.read(4) != b"\x7fELF"
+        except OSError:
+            return False
+
     def find_executable(self, paths: List[str]) -> Optional[str]:
         """Find first available executable from list of paths."""
         for path in paths:
             # Check if it's in PATH
             found = shutil.which(path)
-            if found:
+            if found and not self.is_gnome_orca(found):
                 return found
             # Check absolute path
-            if os.path.isfile(path) and os.access(path, os.X_OK):
+            if os.path.isfile(path) and os.access(path, os.X_OK) and not self.is_gnome_orca(path):
                 return path
         return None
 
@@ -652,7 +685,7 @@ Examples:
         "--config",
         type=Path,
         default=None,
-        help="Path to YAML config file (default: ./config.yaml)",
+        help="Path to YAML config file (default: ./config.yaml plus ./config.local.yaml if present)",
     )
 
     args = parser.parse_args()
