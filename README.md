@@ -48,6 +48,17 @@ autotest --list       # list available tests
 
 Machine-specific executable paths go in `testing/config.local.yaml` (ignored by git), which is merged over `config.yaml`.
 
+### admin/
+**install_software.sh** - Install the standard ORCA, xtb, CREST and g-xTB binaries on a workstation, at the paths the profile, qsub and autotest expect. Downloads are checked against pinned SHA-256 checksums. Each version goes into its own directory (e.g. `/usr/local/xtb-6.7.1`), with `/usr/local/xtb` a symlink to it. The previous installation is kept as `<name>.pre-<date>` and the undo commands are printed. It refuses to switch a package that running jobs are using.
+
+```bash
+sudo admin/install_software.sh --all --dry-run       # show what would change
+sudo admin/install_software.sh --all                 # xtb, CREST, g-xTB
+sudo admin/install_software.sh --orca ~/orca_6_1_1_linux_x86-64_shared_openmpi418.tar.xz
+```
+
+ORCA needs a FACCTs login, so download its tarball first. g-xTB 2 is a modified xtb, installed as `xtb-gxtb` so it never shadows the regular `xtb`; run it as `xtb-gxtb mol.xyz --gxtb`.
+
 ## Installation
 
 Add the scripts to your PATH:
