@@ -44,9 +44,13 @@ Test suite for verifying computational chemistry software installations. Include
 ```bash
 autotest              # test everything installed on this machine
 autotest --list       # list available tests
+autotest --keep       # keep the working directory with all inputs and outputs
+autotest --cores 16   # cores for the parallel tests (default 8)
 ```
 
-Machine-specific executable paths go in `testing/config.local.yaml` (ignored by git), which is merged over `config.yaml`.
+Each test runs a small calculation and checks that it finished normally. Where there is a reference value, it also checks that the final energy matches to within 1e-5 hartree, which catches builds that run but give wrong numbers. When a test fails, the end of its output is printed. Besides the chemistry codes, autotest checks that `mpirun` is OpenMPI 4.x (needed by parallel ORCA 6), and that this repository's `qsub`, `GaussianPrep` and `OrcaPrep` work.
+
+Machine-specific executable paths, disabled tests and reference-energy overrides go in `testing/config.local.yaml` (ignored by git), which is merged over `config.yaml`.
 
 ### admin/
 **install_software.sh** - Install the standard ORCA, xtb, CREST and g-xTB binaries on a workstation, at the paths the profile, qsub and autotest expect. Downloads are checked against pinned SHA-256 checksums. Each version goes into its own directory (e.g. `/usr/local/xtb-6.7.1`), with `/usr/local/xtb` a symlink to it. The previous installation is kept as `<name>.pre-<date>` and the undo commands are printed. It refuses to switch a package that running jobs are using.

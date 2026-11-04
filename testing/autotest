@@ -48,6 +48,7 @@ except ImportError:
 # =============================================================================
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+REPO_DIR = SCRIPT_DIR.parent  # patonlab_unix checkout (for testing its own scripts)
 DEFAULT_INPUT_DIR = SCRIPT_DIR / "inputs"
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "config.yaml"
 LOCAL_CONFIG_FILE = SCRIPT_DIR / "config.local.yaml"  # per-machine overrides, not tracked by git
@@ -68,6 +69,11 @@ class TestConfig:
     depends_on: Optional[str] = None  # Name of test this depends on
     command_template: Optional[str] = None  # Custom command template
     parallel_cores: Optional[int] = None  # Override default parallel cores
+    stdout_file: Optional[str] = None  # Where screen output goes (default: output_file)
+    rewrite_cores: bool = False  # Set %nprocshared/%mem (Gaussian) or palN (ORCA) to the test's cores
+    energy_pattern: Optional[str] = None  # Regex for the final energy; the last match is used
+    reference_energy: Optional[float] = None  # Expected final energy (hartree)
+    tolerance: float = 1e-5  # Allowed |energy - reference_energy| (hartree)
 
 
 def expand_path(path: str) -> str:
@@ -133,6 +139,9 @@ def get_test_configs(
         paths = exe_config.get(key, defaults)
         return [expand_path(p) for p in paths]
 
+    # Reference energies (hartree) are from dynamo, 4 Nov 2026: Gaussian 16 C.01,
+    # ORCA 6.1.0, xtb 6.7.0, CREST 3.0pre, Q-Chem 6.1.1, with 8 cores. Other versions
+    # can differ slightly; override per machine in config.local.yaml if expected.
     configs = {
         "gaussian16": TestConfig(
             name="Gaussian 16",
@@ -147,7 +156,11 @@ def get_test_configs(
             output_file="test_g16.log",
             success_pattern=r"Normal termination",
             version_pattern=r"Gaussian\s+16,\s+Revision\s+([A-Z]\.\d+)",
+            energy_pattern=r"SCF Done:\s+E\(\S+\)\s+=\s+(-?\d+\.\d+)",
+            reference_energy=-156.745971388,
             timeout=600,
+            parallel_cores=parallel_cores,
+            rewrite_cores=True,
         ),
 
         "nbo7": TestConfig(
@@ -160,9 +173,14 @@ def get_test_configs(
             ]),
             input_files=["test_nbo7.com"],
             output_file="test_nbo7.log",
-            success_pattern=r"Normal termination",
+            # NBO must actually run: its banner, then Gaussian's normal termination
+            success_pattern=r"(?s)NBO\s+\d+\.\d+.*Normal termination",
             version_pattern=r"NBO\s+(\d+\.\d+)",
+            energy_pattern=r"SCF Done:\s+E\(\S+\)\s+=\s+(-?\d+\.\d+)",
+            reference_energy=-76.3732798754,
             timeout=600,
+            parallel_cores=parallel_cores,
+            rewrite_cores=True,
         ),
 
         "orca_serial": TestConfig(
@@ -180,6 +198,8 @@ def get_test_configs(
             output_file="test_orca.out",
             success_pattern=r"TERMINATED NORMALLY",
             version_pattern=r"Program Version\s+([\d.]+)",
+            energy_pattern=r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)",
+            reference_energy=-76.420507866343,
             timeout=600,
         ),
 
@@ -198,8 +218,11 @@ def get_test_configs(
             output_file="test_orca_pal8.out",
             success_pattern=r"TERMINATED NORMALLY",
             version_pattern=r"Program Version\s+([\d.]+)",
+            energy_pattern=r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)",
+            reference_energy=-428.326626620231,  # DLPNO-CCSD(T)
             timeout=900,
             parallel_cores=parallel_cores,
+            rewrite_cores=True,
         ),
 
         "xtb": TestConfig(
@@ -214,7 +237,10 @@ def get_test_configs(
             output_file="test_xtb.out",
             success_pattern=r"convergence criteria satisfied",
             version_pattern=r"xtb version\s+([\d.]+)",
+            energy_pattern=r"TOTAL ENERGY\s+(-?\d+\.\d+)\s+Eh",
+            reference_energy=-63.328059669657,
             timeout=300,
+            parallel_cores=parallel_cores,  # sets OMP_NUM_THREADS; xtb otherwise uses every thread
         ),
 
         "crest": TestConfig(
@@ -229,7 +255,10 @@ def get_test_configs(
             input_files=["test_crest.xyz"],
             output_file="test_crest.out",
             success_pattern=r"terminated normally",
-            version_pattern=r"CREST\s+version\s+([\d.]+)",
+            version_pattern=r"Version\s+(\d+\.\d+[\w.]*)",
+            energy_pattern=r"E lowest\s*:\s*(-?\d+\.\d+)",
+            reference_energy=-13.66513,
+            tolerance=1e-4,  # CREST prints 5 decimals
             timeout=1200,
             parallel_cores=parallel_cores,
         ),
@@ -257,12 +286,13 @@ def get_test_configs(
                 "/usr/local/qchem6/bin/qchem",
                 "/usr/local/qchem/bin/qchem",
                 "/opt/qchem/bin/qchem",
-                ""
             ]),
             input_files=["test_qchem.inp"],
             output_file="test_qchem.out",
             success_pattern=r"Thank you very much for using Q-Chem",
-            version_pattern=r"Q-Chem\s+([\d.]+)",
+            version_pattern=r"Q-Chem\s+(\d+\.\d+(?:\.\d+)?)\s+for",
+            energy_pattern=r"Total energy\s+=\s+(-?\d+\.\d+)",
+            reference_energy=-351.18127626,
             timeout=600,
         ),
 
@@ -276,6 +306,7 @@ def get_test_configs(
             ]),
             input_files=["test_cosmo.inp"],
             output_file="test_cosmo.out",
+            stdout_file="test_cosmo_screen.log",  # COSMOtherm writes test_cosmo.out itself
             success_pattern=r"END job\s+8",
             timeout=600,
         ),
@@ -291,10 +322,69 @@ def get_test_configs(
             input_files=["control", "coord", "mos"],
             output_file="test_ridft.out",
             success_pattern=r"ridft : all done",
+            energy_pattern=r"total energy\s+=\s+(-?\d+\.\d+)",
             version_pattern=r"TURBOMOLE\s+V([\d.]+)",
             timeout=600,
             env_vars={"PARA_ARCH": "SMP"},
             parallel_cores=parallel_cores,
+        ),
+
+        # ---- Environment and group scripts ----
+
+        "mpirun": TestConfig(
+            name="OpenMPI",
+            description="mpirun on PATH is OpenMPI 4.x, as parallel ORCA 6 needs",
+            executable_paths=get_exe_paths("mpirun", ["mpirun"]),
+            input_files=[],
+            output_file="mpirun_version.out",
+            command_template="{exe} --version",
+            success_pattern=r"\(Open MPI\)\s+4\.\d+",
+            version_pattern=r"\(Open MPI\)\s+([\d.]+)",
+            timeout=60,
+        ),
+
+        "qsub": TestConfig(
+            name="qsub",
+            description="Group qsub writes a run script that calls the real ORCA binary",
+            executable_paths=get_exe_paths("qsub", [
+                str(REPO_DIR / "python" / "qsub"),
+            ]),
+            input_files=["test_orca.inp"],
+            output_file="qsub_test.sh",
+            stdout_file="qsub_screen.log",
+            command_template="{exe} --script qsub_test.sh {input}",
+            success_pattern=r"(?m)^/\S+/orca test_orca\.inp > test_orca\.out$",
+            timeout=60,
+        ),
+
+        "gaussianprep": TestConfig(
+            name="GaussianPrep",
+            description="Group GaussianPrep (needs cclib) rebuilds a Gaussian input from a log",
+            executable_paths=get_exe_paths("gaussianprep", [
+                str(REPO_DIR / "python" / "GaussianPrep"),
+            ]),
+            input_files=["test_g16.log"],  # written by the Gaussian test
+            output_file="test_g16_ii.com",
+            stdout_file="gaussianprep_screen.log",
+            command_template="{exe} --route B3LYP/6-31G(d) {input}",
+            success_pattern=r"(?ms)^# B3LYP/6-31G\(d\)$.*^0 2$",
+            timeout=120,
+            depends_on="gaussian16",
+        ),
+
+        "orcaprep": TestConfig(
+            name="OrcaPrep",
+            description="Group OrcaPrep (needs cclib) builds an ORCA input from a Gaussian log",
+            executable_paths=get_exe_paths("orcaprep", [
+                str(REPO_DIR / "python" / "OrcaPrep"),
+            ]),
+            input_files=["test_g16.log"],  # written by the Gaussian test
+            output_file="test_g16_ii.inp",
+            stdout_file="orcaprep_screen.log",
+            command_template="{exe} --route B3LYP {input}",
+            success_pattern=r"(?ms)^! B3LYP$.*^\* xyz 0 2$",
+            timeout=120,
+            depends_on="gaussian16",
         ),
     }
 
@@ -316,6 +406,10 @@ def get_test_configs(
             cfg.timeout = overrides["timeout"]
         if "parallel_cores" in overrides:
             cfg.parallel_cores = overrides["parallel_cores"]
+        if "reference_energy" in overrides:
+            cfg.reference_energy = overrides["reference_energy"]
+        if "tolerance" in overrides:
+            cfg.tolerance = overrides["tolerance"]
 
     return configs
 
@@ -335,6 +429,8 @@ class TestResult:
     executable_path: Optional[str] = None
     skipped: bool = False
     error: Optional[str] = None
+    energy: Optional[float] = None
+    output_tail: Optional[str] = None  # Last lines of output, kept for failed tests
 
     def to_dict(self) -> dict:
         return {
@@ -346,6 +442,8 @@ class TestResult:
             "elapsed_time": round(self.elapsed_time, 2),
             "executable": self.executable_path,
             "error": self.error,
+            "energy": self.energy,
+            "output_tail": self.output_tail,
         }
 
 
@@ -377,6 +475,8 @@ class CompChemTester:
         self.verbose = verbose
         self.configs = get_test_configs(self.parallel_cores, self.config)
         self.results: Dict[str, TestResult] = {}
+        self.work_dir: Optional[Path] = None  # set when --keep leaves the working directory
+        self.progress = sys.stdout  # progress lines (stderr in --json mode)
 
     def _detect_cores(self) -> int:
         """Return default number of cores for parallel tests."""
@@ -415,6 +515,26 @@ class CompChemTester:
             return None
         match = re.search(pattern, content)
         return match.group(1) if match else None
+
+    @staticmethod
+    def set_input_cores(path: Path, cores: int) -> None:
+        """Make a copied input use the test's core count (Gaussian %nprocshared/%mem, ORCA palN)."""
+        text = path.read_text()
+        text = re.sub(r"(?im)^%nprocshared=\d+", f"%nprocshared={cores}", text)
+        text = re.sub(r"(?im)^%mem=\S+", f"%mem={2 * cores}GB", text)
+        text = re.sub(r"(?i)\bpal\d+\b", f"pal{cores}", text)
+        path.write_text(text)
+
+    @staticmethod
+    def output_tail(work_dir: Path, files: List[str], lines: int = 15) -> Optional[str]:
+        """Last lines of each output file, to show why a test failed."""
+        parts = []
+        for name in dict.fromkeys(files):  # unique, in order
+            path = work_dir / name
+            if path.is_file():
+                tail = path.read_text(errors="ignore").splitlines()[-lines:]
+                parts.append(f"--- {name}\n" + "\n".join(tail))
+        return "\n".join(parts) or None
 
     def run_test(
         self,
@@ -461,16 +581,21 @@ class CompChemTester:
             else:
                 shutil.copy2(src, work_dir / input_file)
 
+        cores = config.parallel_cores or self.parallel_cores
+        input_file = config.input_files[0] if config.input_files else ""
+        if config.rewrite_cores and input_file:
+            self.set_input_cores(work_dir / input_file, cores)
+
         # Build command
-        input_file = config.input_files[0]
         output_file = config.output_file
+        stdout_file = config.stdout_file or output_file
 
         if config.command_template:
             cmd = config.command_template.format(
                 exe=exe_path,
                 input=input_file,
                 output=output_file,
-                cores=config.parallel_cores or self.parallel_cores,
+                cores=cores,
             )
             cmd_parts = cmd.split()
         else:
@@ -482,7 +607,6 @@ class CompChemTester:
             elif test_id == "xtb":
                 cmd_parts = [exe_path, input_file]
             elif test_id == "crest":
-                cores = config.parallel_cores or self.parallel_cores
                 cmd_parts = [exe_path, input_file, "-T", str(cores)]
             elif test_id == "nciplot":
                 cmd_parts = [exe_path, input_file]
@@ -491,7 +615,6 @@ class CompChemTester:
             elif test_id == "turbomole":
                 cmd_parts = [exe_path]
             elif test_id == "qchem":
-                cores = config.parallel_cores or self.parallel_cores
                 cmd_parts = [exe_path, "-nt", str(cores), input_file, output_file]
             else:
                 cmd_parts = [exe_path, input_file]
@@ -515,7 +638,7 @@ class CompChemTester:
         # Run the test
         start_time = time.time()
         try:
-            with open(work_dir / output_file, "w") as outf:
+            with open(work_dir / stdout_file, "w") as outf:
                 result = subprocess.run(
                     cmd_parts,
                     cwd=work_dir,
@@ -536,17 +659,30 @@ class CompChemTester:
             # Check for success pattern
             success = bool(re.search(config.success_pattern, output_content))
 
-            # Extract version
+            # Extract version and final energy
             version = self.extract_version(config.version_pattern, output_content)
+            energy = None
+            if config.energy_pattern:
+                energies = re.findall(config.energy_pattern, output_content)
+                energy = float(energies[-1]) if energies else None
 
-            if success:
-                msg = "PASSED"
-                if version:
-                    msg += f" (v{version})"
-            else:
+            if not success:
                 msg = "FAILED - success pattern not found in output"
                 if result.returncode != 0:
                     msg += f" (exit code: {result.returncode})"
+            elif config.reference_energy is not None and energy is None:
+                success = False
+                msg = "FAILED - finished, but no final energy found in output"
+            elif config.reference_energy is not None and abs(energy - config.reference_energy) > config.tolerance:
+                success = False
+                msg = (f"FAILED - energy {energy:.8f} differs from reference "
+                       f"{config.reference_energy:.8f} by {energy - config.reference_energy:+.1e} "
+                       f"(tolerance {config.tolerance:.0e})")
+            else:
+                details = [f"v{version}"] if version else []
+                if config.reference_energy is not None:
+                    details.append("energy matches reference")
+                msg = "PASSED" + (f" ({', '.join(details)})" if details else "")
 
             return TestResult(
                 name=config.name,
@@ -555,6 +691,8 @@ class CompChemTester:
                 version=version,
                 elapsed_time=elapsed,
                 executable_path=exe_path,
+                energy=energy,
+                output_tail=None if success else self.output_tail(work_dir, [stdout_file, output_file]),
             )
 
         except subprocess.TimeoutExpired:
@@ -566,6 +704,7 @@ class CompChemTester:
                 elapsed_time=elapsed,
                 executable_path=exe_path,
                 error="timeout",
+                output_tail=self.output_tail(work_dir, [stdout_file, output_file]),
             )
         except Exception as e:
             elapsed = time.time() - start_time
@@ -583,8 +722,9 @@ class CompChemTester:
         only: Optional[List[str]] = None,
         skip: Optional[List[str]] = None,
         dry_run: bool = False,
+        keep: bool = False,
     ) -> Dict[str, TestResult]:
-        """Run all configured tests."""
+        """Run all configured tests (keep=True leaves the working directory in place)."""
         skip = skip or []
 
         # Determine which tests to run
@@ -597,26 +737,33 @@ class CompChemTester:
         test_ids = [t for t in test_ids if t not in skip]
 
         # Create temporary working directory
-        with tempfile.TemporaryDirectory(prefix="autotest_") as tmpdir:
-            work_dir = Path(tmpdir)
-
+        tmpdir = tempfile.mkdtemp(prefix="autotest_")
+        work_dir = Path(tmpdir)
+        self.work_dir = work_dir if keep else None
+        try:
             for test_id in test_ids:
                 config = self.configs[test_id]
 
                 if not dry_run:
-                    print(f"  Testing {config.name}...", end=" ", flush=True)
+                    print(f"  Testing {config.name}...", end=" ", flush=True, file=self.progress)
 
                 result = self.run_test(test_id, work_dir, dry_run)
                 self.results[test_id] = result
 
                 if dry_run:
-                    print(f"  {config.name}: {result.message}")
+                    print(f"  {config.name}: {result.message}", file=self.progress)
                 elif result.passed:
-                    print(f"\033[32m✓\033[0m {result.message}")
+                    print(f"\033[32m✓\033[0m {result.message}", file=self.progress)
                 elif result.skipped:
-                    print(f"\033[33m○\033[0m {result.message}")
+                    print(f"\033[33m○\033[0m {result.message}", file=self.progress)
                 else:
-                    print(f"\033[31m✗\033[0m {result.message}")
+                    print(f"\033[31m✗\033[0m {result.message}", file=self.progress)
+                    if result.output_tail:
+                        print("\n".join("      " + line for line in result.output_tail.splitlines()),
+                              file=self.progress)
+        finally:
+            if not keep:
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
         return self.results
 
@@ -637,6 +784,7 @@ Examples:
   %(prog)s --skip crest         Skip CREST test
   %(prog)s --json               Output results as JSON
   %(prog)s --dry-run            Show what would run without running
+  %(prog)s --keep               Keep inputs and outputs for inspection
   %(prog)s --cores 8            Use 8 cores for parallel tests
   %(prog)s --config my.yaml     Use custom config file
         """,
@@ -674,6 +822,11 @@ Examples:
         type=int,
         metavar="N",
         help="Number of cores for parallel tests (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--keep", "-k",
+        action="store_true",
+        help="Keep the working directory with all inputs and outputs",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -727,11 +880,16 @@ Examples:
         print(f"Using {tester.parallel_cores} cores for parallel tests")
         print("=" * 60 + "\n")
 
+    if args.json:
+        tester.progress = sys.stderr
     results = tester.run_all(
         only=args.only,
         skip=args.skip,
         dry_run=args.dry_run,
+        keep=args.keep,
     )
+    if tester.work_dir:
+        print(f"\nWorking files kept in {tester.work_dir}", file=tester.progress)
 
     # Output results
     if args.json:
@@ -744,6 +902,8 @@ Examples:
             },
             "tests": {k: v.to_dict() for k, v in results.items()},
         }
+        if tester.work_dir:
+            output["work_dir"] = str(tester.work_dir)
         print(json.dumps(output, indent=2))
     else:
         # Print summary
