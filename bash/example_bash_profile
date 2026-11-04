@@ -39,7 +39,11 @@ export PATH="${PATH}:${XTBHOME}/bin:${XTBHOME}"
 if [ -x /usr/local/crest/crest ]; then
 	export PATH="/usr/local/crest:${PATH}"
 fi
-# g-xTB (copy its parameter files to $HOME before first use)
+# g-xTB 2.x, installed by admin/install_software.sh: xtb-gxtb mol.xyz --gxtb
+if [ -x /usr/local/g-xtb/xtb-gxtb ]; then
+	export PATH="${PATH}:/usr/local/g-xtb"
+fi
+# Older standalone g-xTB (gxtb; copy its parameter files to $HOME before first use)
 if [ -d /usr/local/g-xtb-main/binary ]; then
 	export PATH="${PATH}:/usr/local/g-xtb-main/binary"
 fi
