@@ -66,7 +66,7 @@ export PATH="${PATH}:/path/to/patonlab_unix/python:/path/to/patonlab_unix/bash:/
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.6+ (3.7+ for autotest)
 - cclib (`pip install cclib`) for GaussianPrep and OrcaPrep
 - pyyaml (`pip install pyyaml`) optional, for autotest config files
 
