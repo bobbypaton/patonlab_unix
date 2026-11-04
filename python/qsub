@@ -24,10 +24,10 @@ from typing import Optional, List
 # Define executables with fallback locations
 EXECUTABLES = {
     'g16': ['/usr/local/Gaussian/G16C/g16/g16'],
-    'orca': ['/usr/local/ORCA502/orca'],
-    'qchem': ['/usr/local/qchem/bin/qchem'],
+    'orca': ['/usr/local/ORCA6/orca'],
+    'qchem': ['/usr/local/qchem6/bin/qchem'],
     'xtb': ['/usr/local/xtb/bin/xtb'],
-    'crest': ['/usr/local/xtb/crest'],
+    'crest': ['/usr/local/xtb/crest', '/usr/local/crest/crest'],
 }
 
 # File extension to program mapping (defaults - can override with --program)
@@ -41,27 +41,56 @@ EXT_TO_PROGRAM = {
 }
 
 
+def is_orca_binary(path: str) -> bool:
+    """
+    Check that a file is the ORCA executable (a compiled ELF binary).
+
+    GNOME desktops ship an unrelated screen reader at /usr/bin/orca (a Python
+    script), which shutil.which() finds whenever ORCA is not earlier in PATH.
+
+    Args:
+        path: Path to candidate executable
+
+    Returns:
+        True if the file is an ELF binary
+    """
+    try:
+        with open(path, 'rb') as f:
+            return f.read(4) == b'\x7fELF'
+    except OSError:
+        return False
+
+
 def find_executable(program: str) -> Optional[str]:
     """
-    Find the path to an executable using shutil.which() and fallback locations.
-    
+    Find the path to an executable using $ORCA_ROOT (ORCA only), shutil.which()
+    and fallback locations.
+
     Args:
         program: Program name (e.g., 'g16', 'orca')
-    
+
     Returns:
-        Path to executable, or None if not found
+        Absolute path to executable, or None if not found
     """
-    # Try system PATH first
+    candidates = []
+
+    # ORCA must be called with its full path for parallel runs; prefer $ORCA_ROOT
+    if program == 'orca' and os.environ.get('ORCA_ROOT'):
+        candidates.append(os.path.join(os.environ['ORCA_ROOT'], 'orca'))
+
+    # Then the system PATH, then hardcoded fallback locations
     exec_path = shutil.which(program)
     if exec_path:
-        return exec_path
-    
-    # Try hardcoded fallback locations
-    if program in EXECUTABLES:
-        for path in EXECUTABLES[program]:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
-    
+        candidates.append(exec_path)
+    candidates.extend(EXECUTABLES.get(program, []))
+
+    for path in candidates:
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            continue
+        if program == 'orca' and not is_orca_binary(path):
+            continue
+        return os.path.abspath(path)
+
     return None
 
 
@@ -128,7 +157,9 @@ def main() -> None:
         usage="%(prog)s [options] <input1> <input2> ..."
     )
     parser.add_argument("inputfiles", nargs='*', help="Input files (.com, .inp, .xyz, etc.)")
-    parser.add_argument("--nproc", type=int, default=24, help="Number of processors (default: 24)")
+    parser.add_argument("--nproc", type=int, default=16,
+                        help="Cores for Q-Chem, CREST and xtb (default: 16). Gaussian and ORCA "
+                             "take their core count from the input file (%%nprocshared, %%pal)")
     parser.add_argument("--program", default=None, help="Force specific program (g16, orca, qchem, xtb, crest)")
     parser.add_argument("--script", default="sub.sh", help="Output submission script name (default: sub.sh)")
     parser.add_argument("--args", default="", help="Additional runtime arguments for the program")
@@ -162,6 +193,7 @@ def main() -> None:
     # Generate submission script
     try:
         with Logger(args.script) as sub_script:
+            sub_script.write("#!/bin/bash\n")
             for infile in input_files:
                 root, ext = os.path.splitext(infile)
                 outfile = get_output_filename(infile)
@@ -190,13 +222,17 @@ def main() -> None:
                 infile_quoted = shlex.quote(infile)
                 outfile_quoted = shlex.quote(outfile)
                 
+                args_str = f" {args.args}" if args.args else ""
                 if program == 'qchem':
-                    command = f"{exec_quoted} {infile_quoted} -nt {args.nproc} {args.args} > {outfile_quoted}"
+                    # qchem stops reading options at the input file, so options go first
+                    command = f"{exec_quoted} -nt {args.nproc}{args_str} {infile_quoted} > {outfile_quoted}"
                 elif program == 'crest':
-                    command = f"{exec_quoted} {infile_quoted} -T {args.nproc} {args.args} > {outfile_quoted}"
+                    command = f"{exec_quoted} {infile_quoted} -T {args.nproc}{args_str} > {outfile_quoted}"
+                elif program == 'xtb':
+                    # xtb uses every hardware thread unless OMP_NUM_THREADS is set
+                    command = f"OMP_NUM_THREADS={args.nproc} {exec_quoted} {infile_quoted}{args_str} > {outfile_quoted}"
                 else:
-                    # g16, orca, xtb
-                    args_str = f" {args.args}" if args.args else ""
+                    # g16, orca: core count comes from the input file
                     command = f"{exec_quoted} {infile_quoted}{args_str} > {outfile_quoted}"
                 
                 sub_script.write(f"\n{command}")

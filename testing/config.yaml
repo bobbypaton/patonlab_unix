@@ -5,6 +5,13 @@
 #
 # To use: Place this file in the same directory as autotest.py,
 # or specify with: autotest.py --config /path/to/config.yaml
+#
+# Machine-specific changes go in config.local.yaml next to this file (ignored by
+# git). Its sections are merged over this one, e.g. to point at a different ORCA:
+#
+#   executables:
+#     orca:
+#       - /usr/local/orca_6_1_0/orca
 
 # Global settings
 settings:
@@ -34,11 +41,13 @@ executables:
     - /usr/local/Gaussian/G16C/g16/g16
 
   orca:
+    # Explicit paths first: on GNOME desktops a bare "orca" can be the screen reader
+    - ${ORCA_ROOT}/orca
+    - /usr/local/ORCA6/orca
+    - /opt/apps/ORCA6/orca_6_1_0/orca
     - orca
-    - /usr/local/ORCA502/orca
     - /usr/local/orca/orca
     - /opt/orca/orca
-    - ${ORCA_PATH}/orca
 
   xtb:
     - xtb
