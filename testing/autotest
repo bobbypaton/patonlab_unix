@@ -26,6 +26,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+if sys.version_info < (3, 7):
+    sys.exit(f"autotest needs Python 3.7 or later (this is {sys.version.split()[0]}). "
+             "Put conda's python first in your PATH, e.g. /opt/anaconda/bin.")
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional

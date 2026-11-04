@@ -39,6 +39,7 @@ executables:
     # NBO7 runs through Gaussian
     - g16
     - /usr/local/Gaussian/G16C/g16/g16
+    - /opt/gaussian/g16/g16
 
   orca:
     # Explicit paths first: on GNOME desktops a bare "orca" can be the screen reader
@@ -79,6 +80,7 @@ executables:
 
   qchem:
     - qchem
+    - /usr/local/qchem6/bin/qchem
     - /usr/local/qchem/bin/qchem
     - /opt/qchem/bin/qchem
     - ${QC}/bin/qchem
