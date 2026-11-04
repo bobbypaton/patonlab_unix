@@ -53,15 +53,18 @@ Each test runs a small calculation and checks that it finished normally. Where t
 Machine-specific executable paths, disabled tests and reference-energy overrides go in `testing/config.local.yaml` (ignored by git), which is merged over `config.yaml`.
 
 ### admin/
-**install_software.sh** - Install the standard ORCA, xtb, CREST and g-xTB binaries on a workstation, at the paths the profile, qsub and autotest expect. Downloads are checked against pinned SHA-256 checksums. Each version goes into its own directory (e.g. `/usr/local/xtb-6.7.1`), with `/usr/local/xtb` a symlink to it. The previous installation is kept as `<name>.pre-<date>` and the undo commands are printed. It refuses to switch a package that running jobs are using.
+**install_software.sh** - Install the standard ORCA, xtb, CREST and g-xTB binaries, and the OpenMPI that parallel ORCA uses, on a workstation, at the paths the profile, qsub and autotest expect. Downloads are checked against pinned SHA-256 checksums. Each version goes into its own directory (e.g. `/usr/local/xtb-6.7.1`), with `/usr/local/xtb` a symlink to it. The previous installation is kept as `<name>.pre-<date>` and the undo commands are printed. It refuses to switch a package that running jobs are using.
 
 ```bash
 sudo admin/install_software.sh --all --dry-run       # show what would change
-sudo admin/install_software.sh --all                 # xtb, CREST, g-xTB
+sudo admin/install_software.sh --all                 # xtb, CREST, g-xTB, OpenMPI
+sudo admin/install_software.sh --openmpi             # OpenMPI 4.1.8 only, in /opt/openmpi
 sudo admin/install_software.sh --orca ~/orca_6_1_1_linux_x86-64_shared_openmpi418.tar.xz
 ```
 
 ORCA needs a FACCTs login, so download its tarball first. g-xTB 2 is a modified xtb, installed as `xtb-gxtb` so it never shadows the regular `xtb`; run it as `xtb-gxtb mol.xyz --gxtb`.
+
+OpenMPI 4.1.8, the version ORCA 6.1 is built against, is compiled from source (needs `gcc` and `make`) into `/opt/openmpi-4.1.8`, with `/opt/openmpi` a symlink to it. The example profile puts it ahead of conda in `PATH`, because Anaconda's base environment can include MPICH, whose `mpirun` can't start ORCA.
 
 ## Installation
 

@@ -66,9 +66,11 @@ if [ -d /usr/local/nciplot ]; then
 fi
 
 # ==================== ORCA 6 ====================
-# OpenMPI for parallel ORCA: the build in /opt where present, else the one installed
-# under /usr/local, else the system mpirun. (/usr/local/openmpi-4.1.1 is a source tree.)
-for dir in /opt/openmpi-4.1.6 /usr/local; do
+# OpenMPI for parallel ORCA: /opt/openmpi (admin/install_software.sh --openmpi) where
+# present, else the older build in /opt, else the one installed under /usr/local, else
+# the system mpirun. (/usr/local/openmpi-4.1.1 is a source tree.) This goes ahead of
+# conda in PATH: Anaconda's base environment can include MPICH, whose mpirun can't run ORCA.
+for dir in /opt/openmpi /opt/openmpi-4.1.6 /usr/local; do
 	if [ -x "${dir}/bin/mpirun" ]; then
 		export MPI_ROOT="${dir}"
 		export PATH="${MPI_ROOT}/bin:${PATH}"

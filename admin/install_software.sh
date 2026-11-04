@@ -1,7 +1,8 @@
 #!/bin/bash
 #
 # Install the group's standard computational chemistry binaries on a workstation:
-# ORCA, xtb, CREST and g-xTB, at the paths the example profile, qsub and autotest expect.
+# ORCA, xtb, CREST, g-xTB and the OpenMPI that parallel ORCA runs on, at the paths the
+# example profile, qsub and autotest expect.
 #
 # Each package goes into a versioned directory (e.g. /usr/local/xtb-6.7.1) and the
 # standard name (/usr/local/xtb) becomes a symlink to it. A previous installation is
@@ -9,6 +10,7 @@
 #
 # Usage:
 #   sudo admin/install_software.sh --xtb --crest --gxtb
+#   sudo admin/install_software.sh --openmpi
 #   sudo admin/install_software.sh --orca ~/orca_6_1_1_linux_x86-64_shared_openmpi418.tar.xz
 #   admin/install_software.sh --all --orca FILE --dry-run      # show what would happen
 #
@@ -37,14 +39,22 @@ GXTB_VERSION=2.0.1
 GXTB_URL=https://github.com/grimme-lab/g-xtb/releases/download/v2.0.1/xtb-6.7.1-gxtb-140526-linux-x86_64.tar.xz
 GXTB_SHA256=cdfb81164f8d3300fc451dbbf2414528b533e71f7a30ec824b564cd30d6d9e5c
 
+# Built from source: the version FACCTs builds ORCA 6.1 against
+OPENMPI_VERSION=4.1.8
+OPENMPI_URL=https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.8.tar.gz
+OPENMPI_SHA256=fb41086bbed9300baa2f3d7572491facfe5257412fa524ec5a396aa9101d5c62
+
 # ---- Options ------------------------------------------------------------------------
 
 PREFIX=/usr/local
+MPI_BASE=/opt   # OpenMPI goes in /opt, like the existing /opt/openmpi-4.1.6 builds
+PREFIX_GIVEN=0
 DRY_RUN=0
 FORCE=0
 DO_XTB=0
 DO_CREST=0
 DO_GXTB=0
+DO_OPENMPI=0
 ORCA_TARBALL=""
 CREST_BUILD=gnu
 STAMP=$(date +%Y%m%d)
@@ -57,10 +67,12 @@ Options:
   --xtb                 xtb ${XTB_VERSION}            -> ${PREFIX}/xtb
   --crest               CREST ${CREST_VERSION}          -> ${PREFIX}/crest (also ${PREFIX}/xtb/crest)
   --gxtb                g-xTB ${GXTB_VERSION}          -> ${PREFIX}/g-xtb, run as xtb-gxtb
+  --openmpi             OpenMPI ${OPENMPI_VERSION}, built from source -> ${MPI_BASE}/openmpi
+                        (needs gcc and make; takes a few minutes)
   --orca FILE           ORCA from a FACCTs tarball -> ${PREFIX}/ORCA6
-  --all                 --xtb --crest --gxtb (add --orca FILE for ORCA)
+  --all                 --xtb --crest --gxtb --openmpi (add --orca FILE for ORCA)
   --crest-build NAME    gnu (default) or intel
-  --prefix DIR          install under DIR instead of ${PREFIX}
+  --prefix DIR          install everything under DIR instead of ${PREFIX} and ${MPI_BASE}
   --dry-run             print what would be done, change nothing
   --force               switch even if the old version is in use by running jobs
   -h, --help            show this help
@@ -72,10 +84,11 @@ while [ $# -gt 0 ]; do
         --xtb) DO_XTB=1 ;;
         --crest) DO_CREST=1 ;;
         --gxtb) DO_GXTB=1 ;;
-        --all) DO_XTB=1; DO_CREST=1; DO_GXTB=1 ;;
+        --openmpi) DO_OPENMPI=1 ;;
+        --all) DO_XTB=1; DO_CREST=1; DO_GXTB=1; DO_OPENMPI=1 ;;
         --orca) shift; ORCA_TARBALL=${1:?--orca needs a tarball path} ;;
         --crest-build) shift; CREST_BUILD=${1:?--crest-build needs gnu or intel} ;;
-        --prefix) shift; PREFIX=${1:?--prefix needs a directory} ;;
+        --prefix) shift; PREFIX=${1:?--prefix needs a directory}; PREFIX_GIVEN=1 ;;
         --dry-run|-n) DRY_RUN=1 ;;
         --force) FORCE=1 ;;
         -h|--help) usage; exit 0 ;;
@@ -84,10 +97,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ $DO_XTB -eq 0 ] && [ $DO_CREST -eq 0 ] && [ $DO_GXTB -eq 0 ] && [ -z "$ORCA_TARBALL" ]; then
+if [ $DO_XTB -eq 0 ] && [ $DO_CREST -eq 0 ] && [ $DO_GXTB -eq 0 ] && [ $DO_OPENMPI -eq 0 ] && [ -z "$ORCA_TARBALL" ]; then
     usage >&2
     exit 2
 fi
+[ $PREFIX_GIVEN -eq 1 ] && MPI_BASE=$PREFIX
 
 case "$CREST_BUILD" in
     gnu) CREST_URL=$CREST_GNU_URL; CREST_SHA256=$CREST_GNU_SHA256 ;;
@@ -113,6 +127,12 @@ for cmd in curl tar sha256sum xz; do
     command -v $cmd >/dev/null || die "$cmd is required"
 done
 [ -d "$PREFIX" ] || die "$PREFIX does not exist"
+if [ $DO_OPENMPI -eq 1 ]; then
+    [ -d "$MPI_BASE" ] || die "$MPI_BASE does not exist"
+    for cmd in gcc make gzip; do
+        command -v $cmd >/dev/null || die "$cmd is required to build OpenMPI (Ubuntu: apt install build-essential)"
+    done
+fi
 if [ -n "$ORCA_TARBALL" ]; then
     [ -f "$ORCA_TARBALL" ] || die "ORCA tarball not found: $ORCA_TARBALL"
     ORCA_TARBALL=$(cd "$(dirname "$ORCA_TARBALL")" && pwd)/$(basename "$ORCA_TARBALL")
@@ -161,9 +181,11 @@ check_not_in_use() {
     fi
 }
 
-# Move extracted directory $1 to $PREFIX/$2 and point the symlink $PREFIX/$3 at it
+# Move extracted directory $1 to $BASE/$2 and point the symlink $BASE/$3 at it.
+# BASE is $4, default $PREFIX.
 install_versioned() {
-    local src=$1 target=$PREFIX/$2 link=$PREFIX/$3
+    local base=${4:-$PREFIX}
+    local src=$1 target=$base/$2 link=$base/$3
     if [ -e "$target" ]; then
         echo "    $target already exists; reusing it"
     else
@@ -232,6 +254,38 @@ if [ $DO_GXTB -eq 1 ]; then
     install_versioned "$WORK/xtb-6.7.1" "g-xtb-$GXTB_VERSION" g-xtb
 fi
 
+# ---- OpenMPI -------------------------------------------------------------------------
+
+if [ $DO_OPENMPI -eq 1 ]; then
+    say "OpenMPI $OPENMPI_VERSION"
+    check_not_in_use OpenMPI "$MPI_BASE/openmpi/"
+    OMPI_TARGET=$MPI_BASE/openmpi-$OPENMPI_VERSION
+    OMPI_STAGE=$WORK/ompi-stage
+    if [ ! -e "$OMPI_TARGET" ]; then
+        fetch "$OPENMPI_URL" "$OPENMPI_SHA256"
+        # Configured for its final path, installed into a staging copy, then moved
+        # into place by install_versioned. Fortran bindings aren't needed for ORCA.
+        # Half the cores, to leave room for running jobs.
+        JOBS=$(( ($(nproc) + 1) / 2 ))
+        BUILD_LOG=$WORK/openmpi-build.log
+        echo "    ./configure --prefix=$OMPI_TARGET --disable-mpi-fortran"
+        echo "    make -j$JOBS && make install DESTDIR=$OMPI_STAGE   (log: $BUILD_LOG)"
+        if [ $DRY_RUN -eq 0 ]; then
+            say "Building OpenMPI (a few minutes)"
+            tar -C "$WORK" -xzf "$FETCHED"
+            if ! ( cd "$WORK/openmpi-$OPENMPI_VERSION" &&
+                   ./configure --prefix="$OMPI_TARGET" --disable-mpi-fortran &&
+                   make -j"$JOBS" &&
+                   make install DESTDIR="$OMPI_STAGE" ) > "$BUILD_LOG" 2>&1; then
+                tail -25 "$BUILD_LOG" >&2
+                cp "$BUILD_LOG" "/var/tmp/openmpi-$OPENMPI_VERSION-build.log"
+                die "OpenMPI build failed; full log in /var/tmp/openmpi-$OPENMPI_VERSION-build.log"
+            fi
+        fi
+    fi
+    install_versioned "$OMPI_STAGE$OMPI_TARGET" "openmpi-$OPENMPI_VERSION" openmpi "$MPI_BASE"
+fi
+
 # ---- ORCA ----------------------------------------------------------------------------
 
 if [ -n "$ORCA_TARBALL" ]; then
@@ -259,6 +313,7 @@ say "Installed versions"
 [ $DO_XTB -eq 1 ] && echo "    xtb:   $("$PREFIX/xtb/bin/xtb" --version 2>&1 | grep -m1 -oE 'version [0-9.]+')"
 [ $DO_CREST -eq 1 ] && echo "    CREST: $("$PREFIX/crest/crest" --version 2>&1 | grep -m1 -oE 'Version [0-9.a-z]+')"
 [ $DO_GXTB -eq 1 ] && echo "    g-xTB: $GXTB_VERSION (xtb $("$PREFIX/g-xtb/xtb-gxtb" --version 2>&1 | grep -m1 -oE 'version [0-9.]+' | cut -d' ' -f2)), run as: xtb-gxtb mol.xyz --gxtb"
+[ $DO_OPENMPI -eq 1 ] && echo "    OpenMPI: $("$MPI_BASE/openmpi/bin/mpirun" --version 2>&1 | grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+') ($MPI_BASE/openmpi -> $(readlink "$MPI_BASE/openmpi"))"
 [ -n "$ORCA_TARBALL" ] && echo "    ORCA:  $ORCA_VERSION ($PREFIX/ORCA6 -> $(readlink "$PREFIX/ORCA6"))"
 echo
 echo "Previous installations were kept. To undo:"
