@@ -31,6 +31,11 @@ EXECUTABLES = {
 }
 
 # File extension to program mapping (defaults - can override with --program)
+# Sourced in run scripts before ORCA jobs: puts the group's OpenMPI first in PATH, so
+# parallel ORCA works even when conda's MPICH mpirun comes first in the login shell
+OPENMPI_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                           'bash', 'openmpi_env.sh')
+
 # Note: .inp works for both ORCA (default) and QChem
 #       .xyz works for both CREST (default) and XTB
 EXT_TO_PROGRAM = {
@@ -194,6 +199,7 @@ def main() -> None:
     try:
         with Logger(args.script) as sub_script:
             sub_script.write("#!/bin/bash\n")
+            mpi_env_written = False
             for infile in input_files:
                 root, ext = os.path.splitext(infile)
                 outfile = get_output_filename(infile)
@@ -234,6 +240,9 @@ def main() -> None:
                 else:
                     # g16, orca: core count comes from the input file
                     command = f"{exec_quoted} {infile_quoted}{args_str} > {outfile_quoted}"
+                if program == 'orca' and not mpi_env_written and os.path.isfile(OPENMPI_ENV):
+                    sub_script.write(f"\n. {shlex.quote(OPENMPI_ENV)}")
+                    mpi_env_written = True
                 
                 sub_script.write(f"\n{command}")
         

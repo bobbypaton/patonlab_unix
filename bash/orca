@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Group launcher for ORCA: "orca job.inp > job.out", serial or parallel.
+#
+# Runs the real ORCA ($ORCA_ROOT/orca, default /usr/local/ORCA6/orca) by its full
+# path, which parallel runs need, with the group's OpenMPI first in PATH (see
+# openmpi_env.sh). So parallel ORCA works whatever conda or ~/.bashrc puts first,
+# and "orca" never runs the unrelated GNOME screen reader in /usr/bin.
+#
+# Author: Paton Research Group (patonlab@colostate.edu)
+
+here=$(dirname "$(readlink -f "$0")")   # this script's own directory, even via a symlink
+. "${here}/openmpi_env.sh"
+
+ORCA_ROOT=${ORCA_ROOT:-/usr/local/ORCA6}
+if [ ! -x "${ORCA_ROOT}/orca" ]; then
+	echo "orca: ${ORCA_ROOT}/orca not found (set ORCA_ROOT to the ORCA directory)" >&2
+	exit 1
+fi
+if [ "$(readlink -f "${ORCA_ROOT}/orca")" = "$(readlink -f "$0")" ]; then
+	echo "orca: ORCA_ROOT (${ORCA_ROOT}) points at this launcher, not at ORCA" >&2
+	exit 1
+fi
+case ":${LD_LIBRARY_PATH:-}:" in
+	*":${ORCA_ROOT}:"*) ;;
+	*) LD_LIBRARY_PATH="${ORCA_ROOT}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+esac
+export ORCA_ROOT LD_LIBRARY_PATH
+exec "${ORCA_ROOT}/orca" "$@"

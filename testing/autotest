@@ -52,6 +52,26 @@ REPO_DIR = SCRIPT_DIR.parent  # patonlab_unix checkout (for testing its own scri
 DEFAULT_INPUT_DIR = SCRIPT_DIR / "inputs"
 DEFAULT_CONFIG_FILE = SCRIPT_DIR / "config.yaml"
 LOCAL_CONFIG_FILE = SCRIPT_DIR / "config.local.yaml"  # per-machine overrides, not tracked by git
+OPENMPI_ENV = REPO_DIR / "bash" / "openmpi_env.sh"
+
+
+def use_group_openmpi() -> None:
+    """Put the group's OpenMPI first, as the orca launcher and qsub's run scripts do
+    (bash/openmpi_env.sh), so the ORCA and OpenMPI tests check what jobs will use even
+    when conda's MPICH mpirun comes first in this shell."""
+    if not OPENMPI_ENV.is_file():
+        return
+    try:
+        out = subprocess.run(
+            ["sh", "-c", '. "$1" && printf "%s\\n%s\\n" "$PATH" "${LD_LIBRARY_PATH:-}"',
+             "sh", str(OPENMPI_ENV)],
+            stdout=subprocess.PIPE, universal_newlines=True, check=True, timeout=30,
+        ).stdout.split("\n")
+    except (OSError, subprocess.SubprocessError):
+        return
+    os.environ["PATH"] = out[0]
+    if out[1]:
+        os.environ["LD_LIBRARY_PATH"] = out[1]
 
 @dataclass
 class TestConfig:
@@ -333,7 +353,7 @@ def get_test_configs(
 
         "mpirun": TestConfig(
             name="OpenMPI",
-            description="mpirun on PATH is OpenMPI 4.x, as parallel ORCA 6 needs",
+            description="The mpirun that ORCA jobs use (bash/openmpi_env.sh) is OpenMPI 4.x",
             executable_paths=get_exe_paths("mpirun", ["mpirun"]),
             input_files=[],
             output_file="mpirun_version.out",
@@ -850,6 +870,7 @@ Examples:
 
     # Load configuration
     config = load_config(args.config)
+    use_group_openmpi()
 
     # Initialize tester
     tester = CompChemTester(
