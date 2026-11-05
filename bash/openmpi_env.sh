@@ -14,20 +14,25 @@ for _pl_mpi in /opt/openmpi /opt/openmpi-4.1.6 /usr/local; do
 	if [ -x "${_pl_mpi}/bin/mpirun" ]; then
 		MPI_ROOT=${_pl_mpi}
 		export MPI_ROOT
-		# Move ${MPI_ROOT}/bin to the front of PATH (dropping any later copy)
-		_pl_rest=
+		# Move ${MPI_ROOT}/bin to the front of PATH and ${MPI_ROOT}/lib to the front of
+		# LD_LIBRARY_PATH, dropping any later copies. The lib order matters too: an older
+		# OpenMPI's lib earlier in LD_LIBRARY_PATH (e.g. /opt/openmpi-4.1.6/lib from an
+		# old ~/.bash_profile) overrides this build's runpath, so its programs would run
+		# with the other version's libraries. Empty entries (the current directory) are dropped.
 		_pl_ifs_set=${IFS+set}
 		_pl_ifs=${IFS-}
 		IFS=:
+		_pl_rest=
 		for _pl_dir in ${PATH}; do
-			[ "${_pl_dir}" = "${MPI_ROOT}/bin" ] || _pl_rest="${_pl_rest:+${_pl_rest}:}${_pl_dir}"
+			[ -z "${_pl_dir}" ] || [ "${_pl_dir}" = "${MPI_ROOT}/bin" ] || _pl_rest="${_pl_rest:+${_pl_rest}:}${_pl_dir}"
 		done
-		if [ -n "${_pl_ifs_set}" ]; then IFS=${_pl_ifs}; else unset IFS; fi
 		PATH="${MPI_ROOT}/bin${_pl_rest:+:${_pl_rest}}"
-		case ":${LD_LIBRARY_PATH:-}:" in
-			*":${MPI_ROOT}/lib:"*) ;;
-			*) LD_LIBRARY_PATH="${MPI_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
-		esac
+		_pl_rest=
+		for _pl_dir in ${LD_LIBRARY_PATH:-}; do
+			[ -z "${_pl_dir}" ] || [ "${_pl_dir}" = "${MPI_ROOT}/lib" ] || _pl_rest="${_pl_rest:+${_pl_rest}:}${_pl_dir}"
+		done
+		LD_LIBRARY_PATH="${MPI_ROOT}/lib${_pl_rest:+:${_pl_rest}}"
+		if [ -n "${_pl_ifs_set}" ]; then IFS=${_pl_ifs}; else unset IFS; fi
 		export PATH LD_LIBRARY_PATH
 		break
 	fi
