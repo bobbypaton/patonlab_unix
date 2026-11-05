@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""
+Build a workstation's /etc/motd from the shared template (admin/motd_template.txt),
+the machine's hardware, and the results of autotest.
+
+The machine's own banner (the ASCII art at the top of the current /etc/motd, up to
+the "HOSTNAME: hardware" line) is kept; everything below it is regenerated, so the
+hardware line, software status and instructions are the same on every machine.
+
+Author: Paton Research Group (patonlab@colostate.edu)
+
+Usage:
+    make_motd                                  # runs autotest (as you), prints the MOTD
+    make_motd > /tmp/motd.new && sudo cp /etc/motd /etc/motd.bak && sudo cp /tmp/motd.new /etc/motd
+    (don't pipe into "sudo tee /etc/motd": tee can empty the file before the banner is read)
+    autotest --json > ~/autotest.json          # or test first, then
+    make_motd --autotest ~/autotest.json
+    make_motd --note "Rebooting Friday 9am for updates"
+
+Works with Python 3.6 (the system python3 on the CentOS 7 machines).
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import socket
+import string
+import subprocess
+import sys
+
+ADMIN_DIR = os.path.dirname(os.path.realpath(__file__))
+REPO_DIR = os.path.dirname(ADMIN_DIR)
+TEMPLATE = os.path.join(ADMIN_DIR, "motd_template.txt")
+AUTOTEST = os.path.join(REPO_DIR, "testing", "autotest")
+
+# autotest test id -> label shown in the MOTD, in display order
+LABELS = [
+    ("gaussian16", "Gaussian 16"),
+    ("nbo7", "NBO"),
+    ("orca", "ORCA"),           # orca_serial and orca_parallel, combined below
+    ("xtb", "xtb"),
+    ("crest", "CREST"),
+    ("gxtb", "g-xTB"),          # not an autotest test; reported if installed
+    ("nciplot", "NCIPLOT"),
+    ("qchem", "Q-Chem"),
+    ("cosmotherm", "COSMOtherm"),
+    ("turbomole", "TURBOMOLE"),
+    ("mpirun", "OpenMPI"),
+    ("tools", "Group tools"),   # qsub, gaussianprep and orcaprep, combined below
+]
+TOOLS = [("qsub", "qsub"), ("gaussianprep", "GaussianPrep"), ("orcaprep", "OrcaPrep")]
+GXTB = "/usr/local/g-xtb"
+GROUP_PROFILE = "/etc/profile.d/patonlab.sh"
+# Memory sizes to round MemTotal up to (the kernel reserves some of the installed RAM)
+RAM_SIZES = [8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048]
+
+
+def run(cmd):
+    """Return a command's stdout, or "" if it can't run."""
+    try:
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              universal_newlines=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def hardware_line():
+    """HOSTNAME: CPU model, cores | RAM | GPUs"""
+    host = socket.gethostname().split(".")[0].upper()
+    lscpu = dict(
+        (k.strip(), v.strip())
+        for k, _, v in (line.partition(":") for line in run(["lscpu"]).splitlines())
+    )
+    model = re.sub(r"\((R|TM)\)|\s+CPU\s+@.*$", "", lscpu.get("Model name", "unknown CPU"))
+    model = re.sub(r"\s+", " ", model).strip()
+    sockets = int(lscpu.get("Socket(s)", "1") or 1)
+    cores = sockets * int(lscpu.get("Core(s) per socket", "0") or 0)
+    cpu = "{} x {}".format(sockets, model) if sockets > 1 else model
+    if cores and not re.search(r"\d+-Cores?\b", model):   # AMD names include it
+        cpu += ", {} cores".format(cores)
+    parts = [cpu]
+
+    try:
+        with open("/proc/meminfo") as f:
+            kb = int(re.search(r"MemTotal:\s+(\d+)", f.read()).group(1))
+        gib = kb / 1024 ** 2
+        parts.append("{} GB RAM".format(next((s for s in RAM_SIZES if s >= gib), round(gib))))
+    except (OSError, AttributeError):
+        pass
+
+    gpus = {}
+    for line in run(["nvidia-smi", "--query-gpu=name,memory.total",
+                     "--format=csv,noheader,nounits"]).splitlines():
+        name, _, mib = line.rpartition(",")
+        if name:
+            key = "{} ({} GB)".format(name.strip(), round(int(mib) / 1024))
+            gpus[key] = gpus.get(key, 0) + 1
+    for key, n in gpus.items():
+        parts.append("{} x {}".format(n, key) if n > 1 else key)
+
+    return "{}: {}".format(host, " | ".join(parts))
+
+
+def banner_from(path):
+    """Lines of an existing MOTD above its "HOSTNAME: ..." line (or its STATUS line)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+    for i, line in enumerate(lines):
+        if re.match(r"\s*[A-Z][A-Z0-9-]*:\s", line) or re.match(r"\s*STATUS\b", line):
+            return "\n".join(lines[:i]).rstrip()
+    print("make_motd: no hardware or STATUS line in {}; leaving out its banner "
+          "(use --banner FILE)".format(path), file=sys.stderr)
+    return ""
+
+
+def load_results(path):
+    if path:
+        with open(path) as f:
+            data = json.load(f)
+        when = datetime.date.fromtimestamp(os.path.getmtime(path))
+    else:
+        if os.geteuid() == 0:
+            sys.exit("make_motd: don't run autotest as root. As a normal user run\n"
+                     "    autotest --json > ~/autotest.json\n"
+                     "then: make_motd --autotest ~/autotest.json")
+        print("make_motd: running autotest (a few minutes)...", file=sys.stderr)
+        proc = subprocess.run([AUTOTEST, "--json"], stdout=subprocess.PIPE,
+                              universal_newlines=True)
+        data = json.loads(proc.stdout)
+        when = datetime.date.today()
+    return data["tests"], "{} {}".format(when.day, when.strftime("%b %Y"))
+
+
+def not_installed(result):
+    # autotest's message when none of the configured executables exists on this machine
+    return not result["passed"] and (result.get("message") or "").startswith("Executable not found")
+
+
+def reason(result):
+    text = " ".join(str(result.get(k) or "") for k in ("message", "error", "output_tail"))
+    if re.search(r"expired", text, re.I):
+        return "licence expired"
+    if re.search(r"licen[cs]e", text, re.I):
+        return "licence problem"
+    return "not working (run autotest for details)"
+
+
+def line(mark, text):
+    return "   {}  {}".format(mark, text)
+
+
+def describe(label, result):
+    """One status line for a single autotest result, or None if not installed."""
+    if result is None or not_installed(result):
+        return None
+    if result["skipped"]:
+        return line("-", "{}: not tested".format(label))
+    if result["passed"]:
+        return line("✓", " ".join(filter(None, [label, result.get("version")])))
+    return line("✗", "{}: {}".format(label, reason(result)))
+
+
+def status_lines(tests):
+    out = []
+    for key, label in LABELS:
+        if key == "orca":
+            s, p = tests.get("orca_serial"), tests.get("orca_parallel")
+            if s and p and s["passed"] and p["passed"]:
+                out.append(line("✓", "ORCA {} (serial and parallel)".format(s.get("version") or "")))
+            else:
+                out += filter(None, [describe("ORCA (serial)", s), describe("ORCA (parallel)", p)])
+        elif key == "gxtb":
+            target = os.path.basename(os.path.realpath(GXTB))
+            if os.path.exists(os.path.join(GXTB, "xtb-gxtb")):
+                version = target.replace("g-xtb-", "") if target.startswith("g-xtb-") else ""
+                out.append(line("·", " ".join(filter(None, ["g-xTB", version]))
+                                + " (run as xtb-gxtb; not checked by autotest)"))
+        elif key == "tools":
+            found = [(t, name) for t, name in TOOLS if t in tests]
+            if found and all(tests[t]["passed"] for t, _ in found):
+                out.append(line("✓", "Group tools: " + ", ".join(name for _, name in found)))
+            else:
+                out += filter(None, [describe(name, tests[t]) for t, name in found])
+        else:
+            out.append(describe(label, tests.get(key)))
+    # Tests added to autotest later that aren't listed above
+    known = {k for k, _ in LABELS} | {"orca_serial", "orca_parallel"} | {t for t, _ in TOOLS}
+    for key, result in tests.items():
+        if key not in known:
+            out.append(describe(result.get("name", key), result))
+    return "\n".join(l for l in out if l)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--autotest", metavar="FILE",
+                        help="results from 'autotest --json' (default: run autotest now)")
+    parser.add_argument("--banner", metavar="FILE", default="/etc/motd",
+                        help="take the banner from this MOTD (default: /etc/motd)")
+    parser.add_argument("--no-banner", action="store_true", help="leave out the banner")
+    parser.add_argument("--template", metavar="FILE", default=TEMPLATE,
+                        help="template to fill in (default: admin/motd_template.txt)")
+    parser.add_argument("--note", action="append", default=[],
+                        help="add a notice at the bottom (repeatable)")
+    args = parser.parse_args()
+
+    tests, date = load_results(args.autotest)
+    if os.path.exists(GROUP_PROFILE):
+        setup = "   Your shell is set up for this software automatically ({}).".format(GROUP_PROFILE)
+    else:
+        setup = ("   New here? Copy the group profile (if you don't have a ~/.bash_profile yet):\n"
+                 "      cp /usr/local/patonlab_unix/bash/example_bash_profile ~/.bash_profile")
+    notes = "".join("\n   ! {}".format(n) for n in args.note)
+
+    with open(args.template, encoding="utf-8") as f:
+        template = string.Template(f.read())
+    sys.stdout.write(template.substitute(
+        banner="" if args.no_banner else banner_from(args.banner),
+        hardware=hardware_line(),
+        date=date,
+        status=status_lines(tests),
+        setup=setup,
+        notes=notes,
+    ))
+
+
+if __name__ == "__main__":
+    main()

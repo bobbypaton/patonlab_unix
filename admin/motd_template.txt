@@ -1,0 +1,14 @@
+$banner
+   $hardware
+
+   SOFTWARE (checked by autotest, $date)
+$status
+
+   GETTING STARTED
+$setup
+   qsub job.com; nohup ./sub.sh &     run Gaussian, ORCA, Q-Chem, xtb or CREST jobs
+   GaussianPrep, OrcaPrep             new inputs from previous outputs
+   autotest                           check the software on this machine
+   htop                               see who is using the cores before you start
+   Guide: https://csu-theory-suite.github.io/theory-suite-wiki/
+$notes

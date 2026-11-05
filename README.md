@@ -64,6 +64,18 @@ ORCA needs a FACCTs login, so download its tarball first. g-xTB 2 is a modified 
 
 OpenMPI 4.1.8, the version ORCA 6.1 is built against, is compiled from source (needs `gcc` and `make`) into `/opt/openmpi-4.1.8`, with `/opt/openmpi` a symlink to it. The example profile puts it ahead of conda in `PATH`, because Anaconda's base environment can include MPICH, whose `mpirun` can't start ORCA.
 
+**make_motd** - Rebuild a workstation's `/etc/motd` from the shared template (`admin/motd_template.txt`), the machine's hardware (CPU, RAM, GPUs) and the results of `autotest`, so every machine's login message has the same layout, correct paths and an up-to-date software status. The banner art at the top of the current MOTD is kept. Run `autotest` as a normal user, not root:
+
+```bash
+autotest --json > ~/autotest.json
+admin/make_motd --autotest ~/autotest.json                       # preview
+admin/make_motd --autotest ~/autotest.json > /tmp/motd.new       # write to a file first:
+sudo cp /etc/motd /etc/motd.bak && sudo cp /tmp/motd.new /etc/motd   # make_motd reads /etc/motd
+admin/make_motd --autotest ~/autotest.json --note "Rebooting Friday 9am for updates" > /tmp/motd.new
+```
+
+Software that isn't installed on a machine is left out. Failures are marked, with "licence expired" when that is the cause.
+
 ## Installation
 
 On a group workstation, install the group profile once, as root:
