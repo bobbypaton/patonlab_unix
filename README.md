@@ -5,15 +5,13 @@ Unix utilities for computational chemistry workflows in the Paton Research Group
 ## Contents
 
 ### bash/
-Example bash profile with environment setup for:
-- Gaussian 16
-- ORCA
-- Q-Chem
-- XTB / CREST
-- COSMOtherm
-- TURBOMOLE
-- NCIPlot
-- NBO7
+**patonlab_profile.sh** - The group's login environment: Gaussian 16, NBO 7, Q-Chem, ORCA and OpenMPI, xtb, CREST, g-xTB, COSMOtherm, TURBOMOLE, NCIPlot and the group tools. Each block only takes effect if that software is installed, so the same file works on every workstation. Installed as `/etc/profile.d/patonlab.sh` (see below), every account gets it at login. It is plain POSIX sh, prints nothing, and skips root.
+
+**orca** - Launcher for ORCA, serial or parallel: `orca job.inp > job.out`. It runs the real ORCA by its full path (which parallel runs need) with the group's OpenMPI first in `PATH`, so parallel ORCA works even when conda's base environment puts MPICH's `mpirun` first. It also means `orca` never runs `/usr/bin/orca`, an unrelated GNOME screen reader.
+
+**openmpi_env.sh** - Puts the group's OpenMPI (`/opt/openmpi`, else `/opt/openmpi-4.1.6`, else `/usr/local`) first in `PATH` and `LD_LIBRARY_PATH`. Read by the profile, the `orca` launcher, `qsub` run scripts (before ORCA jobs) and `autotest`.
+
+**example_bash_profile** - A `~/.bash_profile` for machines without `/etc/profile.d/patonlab.sh`: it reads `~/.bashrc`, then `patonlab_profile.sh`.
 
 ### python/
 
@@ -68,13 +66,19 @@ OpenMPI 4.1.8, the version ORCA 6.1 is built against, is compiled from source (n
 
 ## Installation
 
-Add the scripts to your PATH:
+On a group workstation, install the group profile once, as root:
 
 ```bash
-export PATH="${PATH}:/path/to/patonlab_unix/python:/path/to/patonlab_unix/bash:/path/to/patonlab_unix/testing"
+sudo ln -s /usr/local/patonlab_unix/bash/patonlab_profile.sh /etc/profile.d/patonlab.sh
 ```
 
-`bash/example_bash_profile` sets up all of the above and works unchanged on every group workstation: each block only takes effect if that software is installed.
+Every account then gets the software environment at its next login, with nothing to copy, and updates to this repository reach everyone. Undo it with `sudo rm /etc/profile.d/patonlab.sh`. A user's own `~/.bash_profile` and `~/.bashrc` run afterwards, so their settings still apply; old lines pointing at moved software (e.g. `ORCA504`, `orca610`) can be deleted.
+
+Without the group profile, copy `bash/example_bash_profile` to `~/.bash_profile`, or add the scripts to your PATH:
+
+```bash
+export PATH="/path/to/patonlab_unix/bash:${PATH}:/path/to/patonlab_unix/python:/path/to/patonlab_unix/testing"
+```
 
 ### Deploying on group machines
 

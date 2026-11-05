@@ -1,89 +1,18 @@
 # .bash_profile
 
-# Get the aliases and functions
+# Get the aliases and functions (and conda, if you use it)
 if [ -f ~/.bashrc ]; then
 	. ~/.bashrc
 fi
 
-# User specific environment and startup programs
-# Each block only takes effect if that software is installed on this machine,
-# so the same profile works on every group workstation.
-
-# Initialize library paths
-if [ -d /usr/local/intel64_lin ]; then
-	export LD_LIBRARY_PATH="/usr/local/intel64_lin:${LD_LIBRARY_PATH}"
+# Group software: Gaussian, NBO, Q-Chem, ORCA and OpenMPI, xtb, CREST, g-xTB, NCIPlot,
+# COSMOtherm, TURBOMOLE and the group tools (qsub, GaussianPrep, OrcaPrep, autotest).
+# Machines with /etc/profile.d/patonlab.sh read it at login already; elsewhere, read it
+# here. Each block only takes effect if that software is installed on this machine.
+if [ ! -e /etc/profile.d/patonlab.sh ] && [ -f /usr/local/patonlab_unix/bash/patonlab_profile.sh ]; then
+	. /usr/local/patonlab_unix/bash/patonlab_profile.sh
 fi
 
-# ==================== GAUSSIAN ====================
-g16root="/usr/local/Gaussian/G16C"
-export g16root
-if [ -f "${g16root}/g16/bsd/g16.profile" ]; then
-	. "${g16root}/g16/bsd/g16.profile"
-fi
-PATH="${PATH}:${HOME}/.local/bin:${HOME}/bin:/usr/local/nbo7/bin"
-export PATH
+# Run ORCA with the group launcher: orca job.inp > job.out (serial or parallel)
 
-# ==================== QCHEM ====================
-if [ -f /usr/local/qchem6/qcenv.sh ]; then
-	. /usr/local/qchem6/qcenv.sh
-fi
-
-# ==================== XTB and CREST ====================
-XTBHOME=/usr/local/xtb
-export XTBHOME
-export XTBPATH="${XTBHOME}/share/xtb:${HOME}"
-export MANPATH="${MANPATH}:${XTBHOME}/share/man"
-export PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:${XTBHOME}/share/xtb"
-export PATH="${PATH}:${XTBHOME}/bin:${XTBHOME}"
-# Newer CREST (3.0.2) where installed, ahead of the copy in ${XTBHOME}
-if [ -x /usr/local/crest/crest ]; then
-	export PATH="/usr/local/crest:${PATH}"
-fi
-# g-xTB 2.x, installed by admin/install_software.sh: xtb-gxtb mol.xyz --gxtb
-if [ -x /usr/local/g-xtb/xtb-gxtb ]; then
-	export PATH="${PATH}:/usr/local/g-xtb"
-fi
-# Older standalone g-xTB (gxtb; copy its parameter files to $HOME before first use)
-if [ -d /usr/local/g-xtb-main/binary ]; then
-	export PATH="${PATH}:/usr/local/g-xtb-main/binary"
-fi
-
-# ==================== COSMOtherm ====================
-if [ -d /usr/local/BIOVIA/COSMOtherm2021 ]; then
-	export PATH="/usr/local/BIOVIA/COSMOtherm2021/COSMOthermX:/usr/local/BIOVIA/COSMOtherm2021/COSMOtherm/BIN-LINUX:${PATH}"
-fi
-
-# ==================== TURBOMOLE ====================
-if [ -x /usr/local/BIOVIA/TURBOMOLE/scripts/sysname ]; then
-	export TURBODIR=/usr/local/BIOVIA/TURBOMOLE
-	export PATH="${TURBODIR}/scripts:${TURBODIR}/bin/$(${TURBODIR}/scripts/sysname):${PATH}"
-fi
-
-# ==================== NCIPlot ====================
-if [ -d /usr/local/nciplot ]; then
-	export NCIPLOT_HOME=/usr/local/nciplot
-	export PATH="/usr/local/nciplot:${PATH}"
-fi
-
-# ==================== ORCA 6 ====================
-# OpenMPI for parallel ORCA: /opt/openmpi (admin/install_software.sh --openmpi) where
-# present, else the older build in /opt, else the one installed under /usr/local, else
-# the system mpirun. (/usr/local/openmpi-4.1.1 is a source tree.) This goes ahead of
-# conda in PATH: Anaconda's base environment can include MPICH, whose mpirun can't run ORCA.
-for dir in /opt/openmpi /opt/openmpi-4.1.6 /usr/local; do
-	if [ -x "${dir}/bin/mpirun" ]; then
-		export MPI_ROOT="${dir}"
-		export PATH="${MPI_ROOT}/bin:${PATH}"
-		export LD_LIBRARY_PATH="${MPI_ROOT}/lib:${LD_LIBRARY_PATH}"
-		break
-	fi
-done
-unset dir
-# ORCA goes first in PATH: GNOME desktops also have an unrelated /usr/bin/orca (a screen reader).
-# Run parallel jobs with the full path: $ORCA_ROOT/orca job.inp > job.out
-export ORCA_ROOT=/usr/local/ORCA6
-export PATH="${ORCA_ROOT}:${PATH}"
-export LD_LIBRARY_PATH="${ORCA_ROOT}:${LD_LIBRARY_PATH}"
-
-# ==================== Group Python utilities ====================
-export PATH="${PATH}:/usr/local/patonlab_unix/python:/usr/local/patonlab_unix/bash:/usr/local/patonlab_unix/testing"
+# Your own settings go below
