@@ -76,6 +76,31 @@ admin/make_motd --autotest ~/autotest.json --note "Rebooting Friday 9am for upda
 
 Software that isn't installed on a machine is left out. Failures are marked, with "licence expired" when that is the cause.
 
+**audit_machines** - Weekly read-only audit of the group's workstations, for admins. It runs `admin/audit_host.sh` on each machine over ssh, without installing or writing anything there, and reports problems as critical, warning or info:
+- **Safety:** readable backups, world-writable software, firewall, admin accounts that are unused, Gaussian, ORCA and Q-Chem access, and the auditing account's SSH keys
+- **Maintenance:** end-of-life OS, waiting updates and reboots, failed services, stale backups, out-of-date group scripts and software versions
+- **Disks and performance:** full disks, degraded RAID, NVIDIA driver not loaded, memory, swap and load
+
+```bash
+admin/audit_machines                    # machines listed in admin/audit_hosts (one ssh name per line)
+admin/audit_machines woody drdoom       # just these
+admin/audit_machines --sudo             # also run the root-only checks (SMART, sshd, backup contents)
+```
+
+`--sudo` runs each machine's installed copy of `audit_host.sh` as root, so the group scripts there must be up to date. Allow just that script, not a shell, with a sudoers rule on each machine (`sudo visudo -f /etc/sudoers.d/patonlab-audit`):
+
+```
+rpaton ALL=(root) NOPASSWD: /usr/local/patonlab_unix/admin/audit_host.sh
+```
+
+The report goes to `~/patonlab_audits/audit-<date>.md` (and `.json`), marking what is new or fixed since the previous report. The exit status is 2 if anything is critical, so it suits cron, e.g. every Monday at 7:00 on a machine that can reach all the others by ssh:
+
+```
+0 7 * * 1  /usr/local/patonlab_unix/admin/audit_machines --quiet
+```
+
+`admin/audit_hosts` and `admin/audit_settings` are not in git. Settings are `NAME=value` lines overriding the defaults in `audit_host.sh`, e.g. `IGNORE_ADMINS="cnsit"` or `DISK_WARN=85`. Reports list security problems, so keep them private.
+
 ## Installation
 
 On a group workstation, install the group profile once, as root:
