@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""
+Weekly admin audit of the group's Linux workstations.
+
+Runs admin/audit_host.sh on every machine over ssh (nothing is installed or
+written on the machines), then writes a dated Markdown report and a JSON copy,
+marks findings that are new or worse since the previous report, and prints a
+summary. Exit status: 2 if anything is critical, 1 if there are warnings, else 0,
+so it can run from cron.
+
+Usage:
+    admin/audit_machines                      # machines from admin/audit_hosts
+    admin/audit_machines woody drdoom         # just these
+    admin/audit_machines --out ~/audits       # where reports go (default ~/patonlab_audits)
+    admin/audit_machines --sudo               # run the checks as root: uses each machine's
+                                              # installed /usr/local/patonlab_unix copy of
+                                              # audit_host.sh, allowed by a sudo rule for
+                                              # that one script (see README); no settings
+
+admin/audit_hosts (not in git) lists one ssh destination per line, e.g. "woody" or
+"user@host"; '#' starts a comment. admin/audit_settings (optional, not in git) sets
+the host script's variables, one NAME=value per line, e.g.
+    IGNORE_ADMINS="cnsit"
+    DISK_WARN=85
+Reports contain security findings: keep them private.
+
+Works with Python 3.6+.
+
+Author: Paton Research Group (patonlab@colostate.edu)
+"""
+
+import argparse
+import concurrent.futures
+import datetime
+import glob
+import json
+import os
+import subprocess
+import sys
+
+ADMIN_DIR = os.path.dirname(os.path.realpath(__file__))
+HOST_SCRIPT = os.path.join(ADMIN_DIR, "audit_host.sh")
+DEFAULT_HOSTS = os.path.join(ADMIN_DIR, "audit_hosts")
+DEFAULT_SETTINGS = os.path.join(ADMIN_DIR, "audit_settings")
+# Root mode runs the copy in each machine's root-owned checkout, so the sudo rule can name
+# one fixed script instead of allowing bash (which would mean passwordless root)
+INSTALLED_SCRIPT = "/usr/local/patonlab_unix/admin/audit_host.sh"
+RANK = {"CRIT": 3, "WARN": 2, "INFO": 1, "OK": 0}
+ICON = {"CRIT": "🔴", "WARN": "🟠", "INFO": "🔵", "OK": "🟢"}
+
+
+def read_hosts(path):
+    hosts = []
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                hosts.append(line)
+    return hosts
+
+
+def read_settings(path):
+    """NAME=value lines -> shell 'export' lines for the top of the host script."""
+    exports = []
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    name, value = line.split("=", 1)
+                    if name.strip().isidentifier():
+                        exports.append("export {}={}".format(name.strip(), value.strip()))
+    return "\n".join(exports) + "\n" if exports else ""
+
+
+def audit(host, script, sudo, timeout):
+    """Run the host script over ssh; return (meta dict, list of findings)."""
+    remote = "sudo -n " + INSTALLED_SCRIPT if sudo else "bash -s"
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+           "-o", "ServerAliveInterval=30", "-o", "ControlPath=none", host, remote]
+    meta, findings = {"name": host}, []
+    try:
+        proc = subprocess.run(cmd, input="" if sudo else script, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return meta, [dict(sev="CRIT", cat="Audit", check="timeout",
+                           msg="audit did not finish within {} s".format(timeout))]
+    for line in proc.stdout.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        sev, cat, check, msg = parts
+        if sev == "META":
+            meta[check] = msg
+        elif sev in RANK:
+            findings.append(dict(sev=sev, cat=cat, check=check, msg=msg))
+    if not findings:
+        err = proc.stderr.strip().splitlines()
+        findings.append(dict(sev="CRIT", cat="Audit", check="unreachable",
+                             msg="could not audit: " + (err[-1] if err else "no output")))
+    return meta, findings
+
+
+def previous_report(out_dir, today_file):
+    files = sorted(f for f in glob.glob(os.path.join(out_dir, "audit-*.json")) if f != today_file)
+    if not files:
+        return None, {}
+    with open(files[-1]) as f:
+        data = json.load(f)
+    prev = {}
+    for host, h in data.get("hosts", {}).items():
+        for x in h["findings"]:
+            prev[(host, x["cat"], x["check"])] = x["sev"]
+    return os.path.basename(files[-1]), prev
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("hosts", nargs="*", help="ssh destinations (default: from --hosts-file)")
+    parser.add_argument("--hosts-file", default=DEFAULT_HOSTS)
+    parser.add_argument("--settings", default=DEFAULT_SETTINGS, help="NAME=value settings for the checks")
+    parser.add_argument("--out", default=os.path.expanduser("~/patonlab_audits"))
+    parser.add_argument("--sudo", action="store_true",
+                        help="run each machine's installed audit_host.sh as root (sudo -n); settings are not used")
+    parser.add_argument("--timeout", type=int, default=1200, help="seconds per machine (default 1200)")
+    parser.add_argument("--quiet", action="store_true", help="print nothing unless there are new problems")
+    args = parser.parse_args()
+
+    if args.hosts:
+        hosts = args.hosts
+    elif os.path.exists(args.hosts_file):
+        hosts = read_hosts(args.hosts_file)
+    else:
+        sys.exit("audit_machines: no machines given and no {} (one ssh destination per line)".format(args.hosts_file))
+    if not hosts:
+        sys.exit("audit_machines: no machines to audit")
+    with open(HOST_SCRIPT) as f:
+        script = f.read()
+    # Settings go after the script's first line, before its defaults are read
+    first, rest = script.split("\n", 1)
+    script = first + "\n" + read_settings(args.settings) + rest
+    os.makedirs(args.out, mode=0o700, exist_ok=True)
+    today = datetime.date.today().isoformat()
+    json_file = os.path.join(args.out, "audit-{}.json".format(today))
+    md_file = os.path.join(args.out, "audit-{}.md".format(today))
+    prev_name, prev = previous_report(args.out, json_file)
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+        futures = {pool.submit(audit, h, script, args.sudo, args.timeout): h for h in hosts}
+        for fut in concurrent.futures.as_completed(futures):
+            results[futures[fut]] = fut.result()
+
+    worst, new_items = 0, []
+    report = {"date": today, "previous": prev_name, "hosts": {}}
+    for host in hosts:
+        meta, findings = results[host]
+        for x in findings:
+            key = (host, x["cat"], x["check"])
+            x["new"] = prev_name is not None and RANK[x["sev"]] >= 1 and RANK[x["sev"]] > RANK.get(prev.get(key, "OK"), 0)
+            if x["new"] and RANK[x["sev"]] >= 2:
+                new_items.append((host, x))
+            worst = max(worst, RANK[x["sev"]])
+        findings.sort(key=lambda x: (-RANK[x["sev"]], x["cat"], x["check"]))
+        report["hosts"][host] = {"meta": meta, "findings": findings}
+    resolved = []
+    if prev_name:
+        now_keys = {(h, x["cat"], x["check"]): x["sev"] for h, r in report["hosts"].items() for x in r["findings"]}
+        resolved = sorted(k for k, s in prev.items() if RANK[s] >= 2 and k[0] in report["hosts"]
+                          and RANK.get(now_keys.get(k, "OK"), 0) < 2)
+
+    with open(json_file, "w") as f:
+        json.dump(report, f, indent=1)
+    os.chmod(json_file, 0o600)
+
+    # ---- Markdown report ----
+    lines = ["# Workstation audit, {}".format(today), ""]
+    lines.append("Compared with {}.".format(prev_name) if prev_name else "No previous report to compare with.")
+    lines += ["", "| Machine | 🔴 critical | 🟠 warnings | 🔵 info | OS |", "|---|---|---|---|---|"]
+    for host in hosts:
+        h = report["hosts"][host]
+        n = {s: sum(1 for x in h["findings"] if x["sev"] == s) for s in RANK}
+        lines.append("| {} | {} | {} | {} | {} |".format(host, n["CRIT"] or "", n["WARN"] or "", n["INFO"] or "",
+                                                         h["meta"].get("os", "?").split(", kernel")[0]))
+    if new_items:
+        lines += ["", "## New or worse since last time", ""]
+        lines += ["- {} **{}**: {}".format(ICON[x["sev"]], h, x["msg"]) for h, x in new_items]
+    if resolved:
+        lines += ["", "## Fixed since last time", ""]
+        lines += ["- {}: {} ({})".format(h, check, cat) for h, cat, check in resolved]
+    for host in hosts:
+        h = report["hosts"][host]
+        m = h["meta"]
+        lines += ["", "## {}".format(host), "",
+                  "{} · {} · {} · audited as {}".format(m.get("os", "?"), m.get("hardware", "?"),
+                                                      m.get("uptime", "?"), m.get("auditor", "?")), ""]
+        for x in h["findings"]:
+            if x["sev"] == "OK":
+                continue
+            lines.append("- {} {}{}: {}".format(ICON[x["sev"]], "**new** " if x["new"] else "", x["cat"], x["msg"]))
+        oks = [x["msg"] for x in h["findings"] if x["sev"] == "OK"]
+        if oks:
+            lines.append("- {} OK: {}".format(ICON["OK"], "; ".join(oks)))
+    with open(md_file, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(md_file, 0o600)
+
+    # ---- Terminal summary ----
+    if not (args.quiet and not new_items):
+        width = max(len(h) for h in hosts)
+        print("Workstation audit {} ({} machines){}".format(today, len(hosts),
+              ", compared with " + prev_name if prev_name else ""))
+        for host in hosts:
+            f = report["hosts"][host]["findings"]
+            n = {s: sum(1 for x in f if x["sev"] == s) for s in RANK}
+            print("  {:<{w}}  {:>2} critical  {:>2} warnings  {:>2} info".format(host, n["CRIT"], n["WARN"], n["INFO"], w=width))
+        crits = [(h, x) for h in hosts for x in report["hosts"][h]["findings"] if x["sev"] == "CRIT"]
+        if crits:
+            print("\nCritical:")
+            for h, x in crits:
+                print("  {:<{w}}  {}".format(h, x["msg"], w=width))
+        if new_items:
+            print("\nNew or worse since last time:")
+            for h, x in new_items:
+                print("  {:<{w}}  {} {}".format(h, x["sev"], x["msg"], w=width))
+        print("\nReport: {}".format(md_file))
+    return {3: 2, 2: 1}.get(worst, 0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

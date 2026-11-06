@@ -1,3 +1,5 @@
 .DS_Store
 .claude
 testing/config.local.yaml
+admin/audit_hosts
+admin/audit_settings
